@@ -1,35 +1,50 @@
-version: '3.8'
+version: '3.9'
 
 services:
   api:
-    build: ./api
+    build:
+      context: ./api
     ports:
       - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - kib-net
 
   influxdb:
-    image: influxdb:1.8
+    image: influxdb:1.8.10
+    restart: unless-stopped
     ports:
       - "8086:8086"
     environment:
       - INFLUXDB_DB=k6
     volumes:
       - influxdb:/var/lib/influxdb
+    networks:
+      - kib-net
 
   grafana:
-    image: grafana/grafana
-    ports:
-      - "3001:3000"
+    image: grafana/grafana:10.0.0
     depends_on:
       - influxdb
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SERVER_ROOT_URL=http://localhost:3001
     volumes:
-      - grafana:/var/lib/grafana 
+      - grafana:/var/lib/grafana
+    networks:
+      - kib-net
 
 volumes:
   influxdb:
   grafana:
+
+networks:
+  kib-net:
+    driver: bridge
 
 # Windows Powershell
 

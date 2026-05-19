@@ -1,21 +1,43 @@
+version: '3.9'
+
 services:
-   mongo:
-     image: mongo:6
-     container_name: mongo_rs
-     restart: always
-     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
-     ports:
-       - "27017:27017"
-     volumes:
-       - mongo_data:/data/db
- 
-   mongo-init:
-     image: mongo:6
-     container_name: mongo_init
-     restart: "no"
-     depends_on:
-       - mongo
-     entrypoint: [ "sh", "-c", "sleep 5 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\", members:[{_id:0, host:\"mongo:27017\"}]})'" ]
- 
+  mongo:
+    image: mongo:6
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mongo-net
+
+  mongo-init:
+    image: mongo:6
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until mongosh --host mongo:27017 --eval 'db.adminCommand("ping")' >/dev/null 2>&1; do
+          sleep 1
+        done
+        sleep 2
+        mongosh --host mongo:27017 --eval 'try { if (rs.status().ok === 1) { print("Replica set already initialized"); } } catch(e) { rs.initiate({_id:"rs0", members:[{_id:0, host:"mongo:27017"}]}); }'
+    networks:
+      - mongo-net
+
 volumes:
-   mongo_data:
+  mongo_data:
+
+networks:
+  mongo-net:
+    driver: bridge

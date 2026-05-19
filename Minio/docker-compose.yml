@@ -1,32 +1,27 @@
+version: '3.9'
+
 services:
   minio:
-    init: true
-    restart: on-failure
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    init: true
+    restart: unless-stopped
     container_name: ${CONTAINER_NAME:-minio}
     ports:
-      - 9000:9000
-      - 9001:9001
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
-      MINIO_UPDATE: off  
-      MINIO_ADDRESS: :9000
-      MINIO_CONSOLE_ADDRESS: :9001
-      MINIO_ROOT_USER: dummy-user
-      MINIO_ROOT_PASSWORD: dummy-password
-      MINIO_REGION_NAME: us-east-1
-    entrypoint: >
-      sh -c "
-      (while ! curl -s http://localhost:9000/minio/health/live; do sleep 1; done &&
-      mc alias set minio http://localhost:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
-      if ! mc ls minio/dummy-bucket > /dev/null 2>&1; then
-        mc mb minio/dummy-bucket
-      else
-        echo 'Bucket dummy-bucket already exists';
-      fi) &
-      minio server /data
-      "
-    healthcheck:
-      test: [CMD, curl, -f, http://localhost:9000/minio/health/live]
-      interval: 10s   
-      timeout: 5s  
-      retries: 3  
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dummy-user}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dummy-password}
+      MINIO_REGION_NAME: ${MINIO_REGION_NAME:-us-east-1}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - minio-net
+
+volumes:
+  minio_data:
+
+networks:
+  minio-net:
+    driver: bridge

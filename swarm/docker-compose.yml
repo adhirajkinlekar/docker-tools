@@ -1,3 +1,5 @@
+version: '3.9'
+
 services:
   traefik:
     image: traefik:v2.10
@@ -27,6 +29,7 @@ services:
 
   home-service:
     image: docker.io/adhirajk/home-service:1.0.0
+    platform: linux/amd64
     networks:
       - backend
     deploy:
@@ -53,6 +56,7 @@ services:
 
   admin-service:
     image: docker.io/adhirajk/admin-service:1.0.0
+    platform: linux/amd64
     networks:
       - backend
     deploy:
@@ -78,6 +82,7 @@ services:
   
   auth-service:
     image: docker.io/adhirajk/auth-service:1.0.0
+    platform: linux/amd64
     networks:
       - backend
     deploy:
@@ -111,4 +116,4 @@ secrets:
 
 networks:
   backend:
-    driver: overlay
+    driver: bridge  

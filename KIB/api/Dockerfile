@@ -1,9 +1,17 @@
-FROM node:18
+FROM node:20-alpine
 
 WORKDIR /app
 
+COPY package*.json ./
+
+RUN npm install --production && npm cache clean --force
+
 COPY . .
 
-RUN npm install
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+USER node
 
 CMD ["node", "index.js"]

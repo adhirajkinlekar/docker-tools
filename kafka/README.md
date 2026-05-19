@@ -13,7 +13,6 @@ This is a **sample project** demonstrating how to build **event-driven Node.js m
 | Service         | Description                                      |
 |-----------------|--------------------------------------------------|
 | `user-service`  | A microservice that produces Kafka events        |
-| `email-service` | A microservice that consumes Kafka events        |
 | `kafka`         | Apache Kafka broker                              |
 | `zookeeper`     | Zookeeper (required by Kafka for coordination)   |
 
@@ -29,7 +28,7 @@ This is a **sample project** demonstrating how to build **event-driven Node.js m
 ### 🧪 Sample Event Flow
 
 1. `user-service` registers a user and **sends an event** (`user-registered`) to Kafka
-2. `email-service` **listens** for `user-registered` events and logs a simulated email notification
+2. A downstream consumer can subscribe to `user-registered` events and react accordingly
 
 ---
 
@@ -54,9 +53,6 @@ curl -X POST http://localhost:3000/register \
 ```
 .
 ├── user-service/
-│   ├── Dockerfile
-│   └── index.js
-├── email-service/
 │   ├── Dockerfile
 │   └── index.js
 ├── docker-compose.yml
