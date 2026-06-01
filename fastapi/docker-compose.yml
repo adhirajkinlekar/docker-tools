@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  api:
+    build: ./api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./api:/app
+    networks:
+      - fastapi-net
+
+networks:
+  fastapi-net:
+    driver: bridge

@@ -1,0 +1,21 @@
+version: '3.9'
+
+services:
+  portainer:
+    image: portainer/portainer-ce:2.20.3
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "${PORTAINER_PORT:-9443}:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    networks:
+      - portainer-net
+
+volumes:
+  portainer_data:
+
+networks:
+  portainer-net:
+    driver: bridge

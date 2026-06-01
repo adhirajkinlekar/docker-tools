@@ -1,0 +1,42 @@
+version: '3.9'
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    restart: unless-stopped
+    ports:
+      - "6831:6831/udp"   # Jaeger agent (Thrift compact)
+      - "6832:6832/udp"   # Jaeger agent (Thrift binary)
+      - "5778:5778"       # Agent config HTTP
+      - "16686:16686"     # Jaeger UI
+      - "4317:4317"       # OTLP gRPC receiver
+      - "4318:4318"       # OTLP HTTP receiver
+      - "14250:14250"     # Jaeger gRPC
+      - "14268:14268"     # Jaeger HTTP thrift
+      - "14269:14269"     # Health check
+      - "9411:9411"       # Zipkin HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
+    networks:
+      - jaeger-net
+
+  hotrod:
+    image: jaegertracing/example-hotrod:1.57
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8083:8083"
+    command: all
+    environment:
+      OTEL_EXPORTER_JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+      JAEGER_AGENT_HOST: jaeger
+      JAEGER_AGENT_PORT: 6831
+    depends_on:
+      - jaeger
+    networks:
+      - jaeger-net
+
+networks:
+  jaeger-net:
+    driver: bridge
