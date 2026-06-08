@@ -1,0 +1,99 @@
+services:
+
+  # ─── MinIO (S3-compatible object storage) ────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: poc-minio
+    ports:
+      - "19000:9000"   # S3 API
+      - "19001:9001"   # Web console  →  http://localhost:19001
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:-minioadmin}"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── SQL Server ───────────────────────────────────────────────────────────────
+  mssql:
+    build: ./db
+    container_name: poc-mssql
+    ports:
+      - "1433:1433"
+    environment:
+      SA_PASSWORD: "${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd}"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa",
+             "-P", "${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd}", "-Q", "SELECT 1",
+             "-C", "-N"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  # ─── FastMCP server ───────────────────────────────────────────────────────────
+  mcp-server:
+    build: ./mcp-server
+    container_name: poc-mcp-server
+    ports:
+      - "8000:8000"
+    environment:
+      MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minioadmin}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minioadmin}"
+      MSSQL_SERVER: mssql
+      MSSQL_DATABASE: PaymentDB
+      MSSQL_USER: sa
+      MSSQL_PASSWORD: "${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd}"
+    depends_on:
+      minio:
+        condition: service_healthy
+      mssql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Seed: upload sample ACH files to MinIO ──────────────────────────────────
+  seed:
+    build: ./seed
+    container_name: poc-seed
+    environment:
+      MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minioadmin}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minioadmin}"
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── Interactive agent ────────────────────────────────────────────────────────
+  agent:
+    build: ./agent
+    container_name: poc-agent
+    environment:
+      MCP_SERVER_URL: "http://mcp-server:8000/sse"
+      AGENT_MODEL: "${AGENT_MODEL:-gpt-4o}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://models.inference.ai.azure.com}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+volumes:
+  minio_data:
+  mssql_data:
