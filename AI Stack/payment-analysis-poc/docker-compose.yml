@@ -78,10 +78,12 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # ─── Interactive agent ────────────────────────────────────────────────────────
-  agent:
-    build: ./agent
-    container_name: poc-agent
+  # ─── Web UI  →  http://localhost:3000 ───────────────────────────────────────
+  ui:
+    build: ./ui
+    container_name: poc-ui
+    ports:
+      - "3000:3000"
     environment:
       MCP_SERVER_URL: "http://mcp-server:8000/sse"
       AGENT_MODEL: "${AGENT_MODEL:-gpt-4o}"
@@ -91,8 +93,11 @@ services:
     depends_on:
       mcp-server:
         condition: service_healthy
-    stdin_open: true
-    tty: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   minio_data:
