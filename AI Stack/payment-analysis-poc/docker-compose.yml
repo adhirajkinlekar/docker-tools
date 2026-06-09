@@ -78,7 +78,48 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # ─── Web UI  →  http://localhost:3000 ───────────────────────────────────────
+  # ─── Qdrant (vector DB for semantic response cache) ──────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: poc-qdrant
+    ports:
+      - "6334:6333"   # REST + gRPC  (host 6334 → container 6333)
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Ollama (local LLM – OpenAI-compatible API) ─────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: poc-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/11434'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  # ─── Ollama init: pull the model once then exit ───────────────────────────────
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: poc-ollama-init
+    environment:
+      OLLAMA_HOST: "ollama:11434"
+    entrypoint: ["sh", "-c", "ollama pull ${FALLBACK_MODEL:-llama3.2}; exit 0"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── Web UI  →  http://localhost:3000 ────────────────────────────────────────
   ui:
     build: ./ui
     container_name: poc-ui
@@ -86,13 +127,20 @@ services:
       - "3000:3000"
     environment:
       MCP_SERVER_URL: "http://mcp-server:8000/sse"
-      AGENT_MODEL: "${AGENT_MODEL:-gpt-4o}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://models.inference.ai.azure.com}"
-      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-ollama}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-http://ollama:11434/v1}"
+      AGENT_MODEL: "${AGENT_MODEL:-llama3.2}"
+      OLLAMA_BASE_URL: "http://ollama:11434/v1"
+      FALLBACK_MODEL: "${FALLBACK_MODEL:-llama3.2}"
+      QDRANT_URL: "http://qdrant:6333"
+      CACHE_TTL_HOURS: "${CACHE_TTL_HOURS:-24}"
     depends_on:
       mcp-server:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 10s
@@ -102,3 +150,5 @@ services:
 volumes:
   minio_data:
   mssql_data:
+  qdrant_data:
+  ollama_data:

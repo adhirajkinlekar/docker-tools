@@ -70,7 +70,9 @@
     header h1 { font-size: 15px; font-weight: 600; }
     header p  { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
 
-    #clear-btn {
+    .header-actions { display: flex; gap: 8px; }
+
+    .hdr-btn {
       background: none;
       border: 1px solid var(--border);
       color: var(--text-muted);
@@ -80,7 +82,8 @@
       cursor: pointer;
       transition: all .15s;
     }
-    #clear-btn:hover { border-color: var(--accent); color: var(--text); }
+    .hdr-btn:hover { border-color: var(--accent); color: var(--text); }
+    #clear-cache-btn:hover { border-color: #f0a030; color: #f0a030; }
 
     /* ── Messages ───────────────────────────────────────────────── */
     #messages {
@@ -312,6 +315,58 @@
       margin: 6px 0;
     }
 
+    /* ── Provider selector ──────────────────────────────────────── */
+    .provider-selector {
+      display: flex;
+      gap: 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 3px;
+    }
+
+    .provider-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .provider-btn:hover { color: var(--text); background: var(--surface2); }
+    .provider-btn.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* ── Provider switch notice ─────────────────────────────────── */
+    .provider-notice {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-left: 44px;
+      font-size: 12px;
+      color: #f0a030;
+      animation: fadeIn .2s ease;
+    }
+
+    /* ── Cache hit badge ────────────────────────────────────────── */
+    .cache-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: #1a2a10;
+      border: 1px solid #3a6020;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 11px;
+      color: #7ecf50;
+      margin-bottom: 8px;
+    }
+
     /* ── Error bubble ───────────────────────────────────────────── */
     .bubble.error {
       background: #2a1a1a;
@@ -388,7 +443,15 @@
         <p>ACH file analysis · Client database · Jan–Jun 2026</p>
       </div>
     </div>
-    <button id="clear-btn">Clear chat</button>
+    <div class="header-actions">
+      <div class="provider-selector" title="Choose which AI provider to use">
+        <button class="provider-btn active" data-provider="auto">Auto</button>
+        <button class="provider-btn" data-provider="primary">External</button>
+        <button class="provider-btn" data-provider="ollama">Ollama</button>
+      </div>
+      <button class="hdr-btn" id="clear-cache-btn" title="Clear the semantic response cache">🗑 Clear cache</button>
+      <button class="hdr-btn" id="clear-btn">Clear chat</button>
+    </div>
   </header>
 
   <!-- Messages -->
@@ -438,12 +501,25 @@
   // ── Session ID (persisted for multi-turn within the browser tab) ──────────
   const SESSION_ID = crypto.randomUUID();
 
+  // ── Provider state ────────────────────────────────────────────────────────
+  let activeProvider = "auto";
+
   // ── DOM refs ──────────────────────────────────────────────────────────────
-  const messagesEl  = document.getElementById("messages");
-  const welcomeEl   = document.getElementById("welcome");
-  const inputEl     = document.getElementById("user-input");
-  const sendBtn     = document.getElementById("send-btn");
-  const clearBtn    = document.getElementById("clear-btn");
+  const messagesEl     = document.getElementById("messages");
+  const welcomeEl      = document.getElementById("welcome");
+  const inputEl        = document.getElementById("user-input");
+  const sendBtn        = document.getElementById("send-btn");
+  const clearBtn       = document.getElementById("clear-btn");
+  const clearCacheBtn  = document.getElementById("clear-cache-btn");
+  const providerBtns   = document.querySelectorAll(".provider-btn");
+
+  // ── Provider selector ─────────────────────────────────────────────────────
+  providerBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      activeProvider = btn.dataset.provider;
+      providerBtns.forEach(b => b.classList.toggle("active", b === btn));
+    });
+  });
 
   // ── Marked config ─────────────────────────────────────────────────────────
   marked.setOptions({ breaks: true, gfm: true });
@@ -462,6 +538,15 @@
   // ── Suggestion chips ──────────────────────────────────────────────────────
   document.querySelectorAll(".suggestion-chip").forEach(chip => {
     chip.addEventListener("click", () => sendMessage(chip.dataset.msg));
+  });
+
+  // ── Clear cache ───────────────────────────────────────────────────────────
+  clearCacheBtn.addEventListener("click", async () => {
+    clearCacheBtn.disabled = true;
+    clearCacheBtn.textContent = "Clearing…";
+    await fetch("/cache", { method: "DELETE" });
+    clearCacheBtn.disabled = false;
+    clearCacheBtn.textContent = "🗑 Clear cache";
   });
 
   // ── Clear chat ────────────────────────────────────────────────────────────
@@ -535,7 +620,7 @@
     if (chip) chip.classList.add("done");
   }
 
-  function showAnswer(markdown) {
+  function showAnswer(markdown, cacheLabel = null) {
     // Remove thinking indicator
     if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 
@@ -543,7 +628,13 @@
     row.className = "msg-row agent";
     agentBubble   = document.createElement("div");
     agentBubble.className = "bubble";
-    agentBubble.innerHTML = marked.parse(markdown);
+
+    if (cacheLabel) {
+      agentBubble.innerHTML =
+        `<div class="cache-badge">${cacheLabel}</div>` + marked.parse(markdown);
+    } else {
+      agentBubble.innerHTML = marked.parse(markdown);
+    }
 
     const avatar = document.createElement("div");
     avatar.className = "avatar";
@@ -564,6 +655,15 @@
       <div class="bubble error">⚠ ${escHtml(msg)}</div>
     `;
     messagesEl.appendChild(row);
+    scrollBottom();
+  }
+
+  function showProviderNotice(from, to) {
+    const labels = { primary: "External", ollama: "Ollama", auto: "Auto" };
+    const notice = document.createElement("div");
+    notice.className = "provider-notice";
+    notice.innerHTML = `⚡ Rate/quota limit hit on <strong>${labels[from] || from}</strong> — switched to <strong>${labels[to] || to}</strong>`;
+    messagesEl.appendChild(notice);
     scrollBottom();
   }
 
@@ -591,7 +691,7 @@
       const res = await fetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, session_id: SESSION_ID }),
+        body: JSON.stringify({ message: text, session_id: SESSION_ID, provider: activeProvider }),
       });
 
       const reader  = res.body.getReader();
@@ -617,10 +717,21 @@
             addToolChip(evt.name);
           }
 
+          if (evt.type === "cache_hit") {
+            if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+            if (activityEl) { activityEl.remove(); activityEl = null; }
+            const ttl = evt.ttl_hours ?? 24;
+            showAnswer(evt.content || "", `⚡ From cache · refreshes every ${ttl}h`);
+          }
+
           if (evt.type === "message") {
             if (lastToolName) finishToolChip(lastToolName);
             lastToolName = null;
-            showAnswer(evt.content || "");
+            showAnswer(evt.content || "", null);
+          }
+
+          if (evt.type === "provider_switch") {
+            showProviderNotice(evt.from_provider, evt.to_provider);
           }
 
           if (evt.type === "error") {

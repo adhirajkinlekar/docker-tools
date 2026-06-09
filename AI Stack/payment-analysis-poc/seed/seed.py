@@ -619,11 +619,22 @@ SAMPLES = [
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main():
-    print("Waiting for MinIO to be ready …")
-    time.sleep(5)
+def _wait_for_minio(s3, retries: int = 20, delay: float = 3.0):
+    """Poll MinIO until it responds, with retries."""
+    for attempt in range(1, retries + 1):
+        try:
+            s3.list_buckets()
+            print(f"MinIO ready (attempt {attempt})")
+            return
+        except Exception as exc:
+            print(f"  MinIO not ready yet ({exc}) – retrying in {delay}s …")
+            time.sleep(delay)
+    raise RuntimeError(f"MinIO did not become ready after {retries} attempts")
 
+
+def main():
     s3 = _s3_client()
+    _wait_for_minio(s3)
 
     # Create bucket
     try:
@@ -634,22 +645,29 @@ def main():
         if code in ("BucketAlreadyExists", "BucketAlreadyOwnedByYou"):
             print(f"Bucket '{BUCKET}' already exists – skipping creation.")
         else:
-            print(f"Bucket create error: {e}")
+            raise RuntimeError(f"Bucket create error: {e}") from e
 
     uploaded = 0
+    failed   = 0
     for spec in SAMPLES:
-        content = generate_ach(
-            company_name=spec["company_name"],
-            company_id=spec["company_id"],
-            effective_date=spec["effective_date"],
-            entries=spec["entries"],
-        )
         key = f"{spec['folder']}/{spec['name']}"
-        s3.put_object(Bucket=BUCKET, Key=key, Body=content.encode("ascii"))
-        print(f"  Uploaded: {key}  ({len(content)} bytes)")
-        uploaded += 1
+        try:
+            content = generate_ach(
+                company_name=spec["company_name"],
+                company_id=spec["company_id"],
+                effective_date=spec["effective_date"],
+                entries=spec["entries"],
+            )
+            s3.put_object(Bucket=BUCKET, Key=key, Body=content.encode("ascii"))
+            print(f"  Uploaded: {key}  ({len(content)} bytes)")
+            uploaded += 1
+        except Exception as exc:
+            print(f"  ERROR uploading {key}: {exc}")
+            failed += 1
 
-    print(f"\nSeed complete – {uploaded} ACH files uploaded to bucket '{BUCKET}'.")
+    print(f"\nSeed complete – {uploaded} ACH files uploaded, {failed} failed.")
+    if failed:
+        raise SystemExit(f"{failed} file(s) failed to upload – check logs above")
     print("\nFolders available:")
     for folder in sorted({s["folder"] for s in SAMPLES}):
         count = sum(1 for s in SAMPLES if s["folder"] == folder)
