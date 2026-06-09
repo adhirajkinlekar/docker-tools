@@ -7,57 +7,25 @@ A fully Dockerised proof-of-concept that lets you query ACH/NACHA payment files 
 ## Architecture
 
 ```
-Browser
-  │
-  │  HTTP + SSE (streaming)
-  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Web UI  (FastAPI + SSE · port 3000)                                │
-│  • Provider selector: Auto / External / Ollama                      │
-│  • Semantic response cache (Qdrant)                                 │
-└────────┬──────────────────────────────────────────┬────────────────┘
-         │ MCP over SSE                             │ OpenAI-compat API
-         ▼                                          ▼
-┌─────────────────────────┐          ┌──────────────────────────────┐
-│  FastMCP Server         │          │  LLM Provider                │
-│  (port 8000)            │          │  • GitHub Models (primary)   │
-│                         │          │  • Ollama / qwen2.5:3b       │
-│  MCP Tools:             │          │    (local fallback)          │
-│  • list_payment_folders │          └──────────────────────────────┘
-│  • fetch_and_parse_ach  │
-│  • get_client_info      │──boto3──▶ MinIO (port 9000)
-│  • get_client_txns      │           payments bucket
-│  • get_container_summary│             ├── IMM-CTC-DROP/   ← MCP
-│  • list_all_clients     │──pymssql──▶ ├── CORP-BATCH/     ← MCP
-│  • rag_search_payments  │──HTTP───▶   ├── HEALTH-PAYMENTS/← MCP
-└─────────────────────────┘  indexer    └── Archive/        ← RAG
-                                │
-                     ┌──────────┴───────────┐
-                     │  ACH Indexer         │
-                     │  (port 8001)         │
-                     │  • MinIO webhook     │
-                     │  • fastembed         │
-                     │  • Qdrant upsert     │
-                     └──────────┬───────────┘
-                                │
-               ┌────────────────┼────────────────┐
-               ▼                ▼                ▼
-         ┌──────────┐   ┌─────────────┐  ┌──────────────┐
-         │  Qdrant  │   │    MinIO    │  │  SQL Server  │
-         │ port 6333│   │  port 9000  │  │  port 1433   │
-         │          │   │             │  │  PaymentDB   │
-         │ach_index │   │  payments/  │  │  clients +   │
-         │response_ │   │  bucket     │  │  transactions│
-         │cache     │   └─────────────┘  └──────────────┘
-         └──────────┘
+User query
+    │
+    ▼
+  Agent
+    │
+    ├─── folder = IMM-CTC-DROP / CORP-BATCH / HEALTH-PAYMENTS
+    │              │
+    │        MCP tools
+    │              ├── fetch_and_parse_ach_files ──▶ MinIO
+    │              ├── get_client_info           ──▶ MSSQL
+    │              └── get_client_recent_txns    ──▶ MSSQL
+    │
+    └─── folder = Archive
+                   │
+             rag_search_payments
+                   │
+             Qdrant vector search  ◀── indexed at upload time
+             (ach_index collection)     via MinIO webhook
 ```
-
-### Dual retrieval modes
-
-| Folder | How it works |
-|---|---|
-| `IMM-CTC-DROP`, `CORP-BATCH`, `HEALTH-PAYMENTS` | **MCP tools** — agent fetches raw ACH files from MinIO, parses them, queries the database |
-| `Archive` | **RAG** — files are indexed into Qdrant at upload time; agent queries the vector index with `rag_search_payments` |
 
 The LLM picks the right path automatically based on the folder name.
 
