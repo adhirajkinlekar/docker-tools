@@ -10,6 +10,11 @@ services:
     environment:
       MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:-minioadmin}"
       MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:-minioadmin}"
+      # Webhook target "1": POSTs to the indexer when objects are created in
+      # Archive/. The indexer registers the bucket notification
+      # on startup via put_bucket_notification_configuration.
+      MINIO_NOTIFY_WEBHOOK_ENABLE_1: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_1: "http://indexer:8001/webhook"
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
@@ -40,6 +45,28 @@ services:
       retries: 15
       start_period: 30s
 
+  # ─── ACH RAG Indexer ─────────────────────────────────────────────────────────
+  indexer:
+    build: ./indexer
+    container_name: poc-indexer
+    ports:
+      - "8001:8001"
+    environment:
+      MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minioadmin}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minioadmin}"
+      QDRANT_URL: "http://qdrant:6333"
+    depends_on:
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ─── FastMCP server ───────────────────────────────────────────────────────────
   mcp-server:
     build: ./mcp-server
@@ -54,10 +81,13 @@ services:
       MSSQL_DATABASE: PaymentDB
       MSSQL_USER: sa
       MSSQL_PASSWORD: "${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd}"
+      INDEXER_URL: "http://indexer:8001"
     depends_on:
       minio:
         condition: service_healthy
       mssql:
+        condition: service_healthy
+      indexer:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

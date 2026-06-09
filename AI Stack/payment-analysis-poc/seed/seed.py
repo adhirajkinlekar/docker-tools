@@ -541,6 +541,138 @@ SAMPLES = [
     },
 
     # ═══════════════════════════════════════════════════════════════
+    # Payment-Files-Archive  (RAG-indexed folder)
+    # ═══════════════════════════════════════════════════════════════
+
+    # ── NEXUS PAYMENTS: steady B2B vendor payments, ~8% MoM growth ─
+    {
+        "folder": "Archive", "name": "ACH_20260115_NEXUS.ach",
+        "company_name": "NEXUS PAYMENTS", "company_id": "7654321098",
+        "effective_date": "260115",
+        "entries": [
+            {"amount": 15200.00, "transaction_code": "22"},
+            {"amount": 22500.00, "transaction_code": "22"},
+            {"amount":  4800.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260215_NEXUS.ach",
+        "company_name": "NEXUS PAYMENTS", "company_id": "7654321098",
+        "effective_date": "260215",
+        "entries": [
+            {"amount": 16400.00, "transaction_code": "22"},
+            {"amount": 24300.00, "transaction_code": "22"},
+            {"amount":  5100.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260315_NEXUS.ach",
+        "company_name": "NEXUS PAYMENTS", "company_id": "7654321098",
+        "effective_date": "260315",
+        "entries": [
+            {"amount": 17700.00, "transaction_code": "22"},
+            {"amount": 26200.00, "transaction_code": "22"},
+            {"amount":  5500.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260415_NEXUS.ach",
+        "company_name": "NEXUS PAYMENTS", "company_id": "7654321098",
+        "effective_date": "260415",
+        "entries": [
+            {"amount": 19100.00, "transaction_code": "22"},
+            {"amount": 28300.00, "transaction_code": "22"},
+            {"amount":  5900.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260515_NEXUS.ach",
+        "company_name": "NEXUS PAYMENTS", "company_id": "7654321098",
+        "effective_date": "260515",
+        "entries": [
+            {"amount": 20600.00, "transaction_code": "22"},
+            {"amount": 30500.00, "transaction_code": "22"},
+            {"amount":  6400.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260601_NEXUS.ach",
+        "company_name": "NEXUS PAYMENTS", "company_id": "7654321098",
+        "effective_date": "260601",
+        "entries": [
+            {"amount": 22200.00, "transaction_code": "22"},
+            {"amount": 33000.00, "transaction_code": "22"},
+            {"amount":  6900.00, "transaction_code": "27"},
+        ],
+    },
+
+    # ── DIGITAL MERCHANTS: high-volume but volatile – big debits spike in Apr/May
+    {
+        "folder": "Archive", "name": "ACH_20260115_DIGMERCH.ach",
+        "company_name": "DIGITAL MERCHANTS", "company_id": "3344556677",
+        "effective_date": "260115",
+        "entries": [
+            {"amount": 98000.00, "transaction_code": "22"},
+            {"amount": 71500.00, "transaction_code": "22"},
+            {"amount": 12000.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260215_DIGMERCH.ach",
+        "company_name": "DIGITAL MERCHANTS", "company_id": "3344556677",
+        "effective_date": "260215",
+        "entries": [
+            {"amount": 103000.00, "transaction_code": "22"},
+            {"amount":  75000.00, "transaction_code": "22"},
+            {"amount":  13500.00, "transaction_code": "27"},
+        ],
+    },
+    {
+        "folder": "Archive", "name": "ACH_20260315_DIGMERCH.ach",
+        "company_name": "DIGITAL MERCHANTS", "company_id": "3344556677",
+        "effective_date": "260315",
+        "entries": [
+            {"amount": 108000.00, "transaction_code": "22"},
+            {"amount":  79000.00, "transaction_code": "22"},
+            {"amount":  15000.00, "transaction_code": "27"},
+        ],
+    },
+    # April: debit spike – large reversal batch
+    {
+        "folder": "Archive", "name": "ACH_20260415_DIGMERCH.ach",
+        "company_name": "DIGITAL MERCHANTS", "company_id": "3344556677",
+        "effective_date": "260415",
+        "entries": [
+            {"amount": 112000.00, "transaction_code": "22"},
+            {"amount":  80000.00, "transaction_code": "22"},
+            {"amount":  55000.00, "transaction_code": "27"},   # reversal spike
+            {"amount":  22000.00, "transaction_code": "27"},
+        ],
+    },
+    # May: recovery but still elevated debits
+    {
+        "folder": "Archive", "name": "ACH_20260515_DIGMERCH.ach",
+        "company_name": "DIGITAL MERCHANTS", "company_id": "3344556677",
+        "effective_date": "260515",
+        "entries": [
+            {"amount": 115000.00, "transaction_code": "22"},
+            {"amount":  82000.00, "transaction_code": "22"},
+            {"amount":  28000.00, "transaction_code": "27"},
+        ],
+    },
+    # June: stabilising
+    {
+        "folder": "Archive", "name": "ACH_20260601_DIGMERCH.ach",
+        "company_name": "DIGITAL MERCHANTS", "company_id": "3344556677",
+        "effective_date": "260601",
+        "entries": [
+            {"amount": 118000.00, "transaction_code": "22"},
+            {"amount":  85000.00, "transaction_code": "22"},
+            {"amount":  14000.00, "transaction_code": "27"},
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════
     # HEALTH-PAYMENTS
     # ═══════════════════════════════════════════════════════════════
 

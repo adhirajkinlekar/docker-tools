@@ -106,6 +106,7 @@ class SemanticCache:
                 query_filter=self._ttl_filter(),
                 limit=1,
                 score_threshold=THRESHOLD,
+                with_payload=True,
             )
             if results:
                 hit     = results[0]

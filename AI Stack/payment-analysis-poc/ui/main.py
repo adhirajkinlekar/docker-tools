@@ -50,22 +50,36 @@ SYSTEM_PROMPT = """
 You are a payment operations analyst with direct access to:
   • MinIO object storage – folders containing ACH/NACHA payment files (Jan–Jun 2026)
   • An MSSQL database – client profiles and 6 months of transaction history
+  • A semantic vector index – pre-indexed summaries of Archive files
 
 ACH files contain PII (account numbers, names, individual IDs) which are
 automatically redacted. You will see [REDACTED] in those fields – never
 attempt to reconstruct them.
 
-When asked to analyse a folder (e.g. "Analyse payment files in IMM-CTC-DROP"):
-1. Call fetch_and_parse_ach_files to get file summaries for the folder
-2. Extract company_names / company_identification values
-3. Call get_client_info with those identifiers
-4. For flagged or high-value clients, call get_client_recent_transactions
-5. Produce a structured analysis covering:
-   • File summary (count, date range, total credits/debits)
-   • Month-on-month trend (volumes are available for Jan–Jun 2026)
-   • Per-company breakdown and client status
-   • Risk indicators (suspended accounts, growing returns, failed transactions)
-   • Recommendations for any anomalies detected
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOOL ROUTING – choose based on the folder requested:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+▸ IMM-CTC-DROP, CORP-BATCH, HEALTH-PAYMENTS  →  MCP tools
+  1. fetch_and_parse_ach_files(folder_path=<FOLDER>) to get file summaries
+  2. get_client_info(company_identifiers=[...]) to look up client records
+  3. get_client_recent_transactions(client_id=...) for flagged/high-value clients
+  4. Synthesise: file summary, MoM trend, per-company breakdown, risk indicators
+
+▸ Archive  →  RAG tool
+  1. rag_search_payments(query=<natural language question>) to retrieve relevant
+     pre-indexed ACH batch summaries via semantic similarity
+  2. Synthesise the returned hits into a structured analysis
+  Note: do NOT call fetch_and_parse_ach_files for Archive
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+For all analyses, produce a structured report covering:
+  • File / batch summary (count, date range, total credits/debits)
+  • Month-on-month trend (Jan–Jun 2026 data is available)
+  • Per-company breakdown and client status
+  • Risk indicators (suspended accounts, debit spikes, return growth)
+  • Recommendations for any anomalies detected
 
 Be concise but thorough. Use markdown formatting.
 """.strip()
@@ -244,50 +258,51 @@ async def agent_stream(
                 client, model = _resolve_provider(
                     "primary" if provider != "ollama" else "ollama"
                 )
-                active_provider = "ollama" if provider == "ollama" else "primary"
 
-                # Collect SSE events; if quota error and mode==auto → retry with ollama
-                events_buffer: list[str] = []
-                fell_back = False
-
-                try:
+                if provider != "auto":
+                    # Fixed provider — stream events directly, no buffering needed
                     async for event in _run_agent(messages, oai_tools, mcp_session, client, model):
-                        events_buffer.append(event)
+                        yield event
+                else:
+                    # Auto mode — buffer so we can intercept quota errors mid-loop
+                    events_buffer: list[str] = []
 
-                except (openai.RateLimitError, openai.APIStatusError) as exc:
-                    if provider == "auto" and _is_quota_error(exc):
-                        # Flush tool_call events already buffered, then notify
-                        for e in events_buffer:
-                            if '"tool_call"' in e:
-                                yield e
-                        yield _sse(
-                            "provider_switch",
-                            from_provider="primary",
-                            to_provider="ollama",
-                            reason=str(exc)[:120],
-                        )
-                        logger.warning("Primary quota hit – retrying with Ollama: %s", exc)
-
-                        # Reset messages to before the failed attempt
-                        messages = [m for m in messages if not m.get("_final")]
-                        # Remove any assistant/tool messages added during failed attempt
-                        while messages and messages[-1]["role"] != "user":
-                            messages.pop()
-
-                        events_buffer = []
-                        fell_back     = True
-                        active_provider = "ollama"
-
-                        async for event in _run_agent(
-                            messages, oai_tools, mcp_session, oai_ollama, OLLAMA_MODEL
-                        ):
+                    try:
+                        async for event in _run_agent(messages, oai_tools, mcp_session, client, model):
                             events_buffer.append(event)
-                    else:
-                        raise
 
-                # Yield all buffered events
-                for event in events_buffer:
-                    if not ('"_final"' in event):   # skip sentinel
+                    except (openai.RateLimitError, openai.APIStatusError) as exc:
+                        if _is_quota_error(exc):
+                            # Yield any tool_call chips already collected, then announce switch
+                            for e in events_buffer:
+                                if '"tool_call"' in e:
+                                    yield e
+                            yield _sse(
+                                "provider_switch",
+                                from_provider="primary",
+                                to_provider="ollama",
+                                reason=str(exc)[:120],
+                            )
+                            logger.warning("Primary quota hit – retrying with Ollama: %s", exc)
+
+                            # Roll back messages to the last user turn
+                            messages = [m for m in messages if not m.get("_final")]
+                            while messages and messages[-1]["role"] != "user":
+                                messages.pop()
+
+                            events_buffer = []
+
+                            # Retry with Ollama — stream directly (no further fallback possible)
+                            async for event in _run_agent(
+                                messages, oai_tools, mcp_session, oai_ollama, OLLAMA_MODEL
+                            ):
+                                yield event
+                            events_buffer = []  # already streamed
+                        else:
+                            raise
+
+                    # Flush buffered events from successful primary run
+                    for event in events_buffer:
                         yield event
 
                 # Extract final content from sentinel
@@ -305,14 +320,16 @@ async def agent_stream(
                         {"role": "assistant", "content": final_content},
                     ]
 
+        # ── 3. Cache successful response ──────────────────────────────────────
+        # Must be inside the try block — code after `finally: yield` may not
+        # run if the client closes the connection before the generator is drained.
+        if final_content:
+            await cache.set(user_message, final_content)
+
     except BaseException as exc:
         yield _sse("error", content=_unwrap_exc(exc))
     finally:
         yield _sse("done")
-
-    # ── 3. Cache successful response ──────────────────────────────────────────
-    if final_content:
-        await cache.set(user_message, final_content)
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────

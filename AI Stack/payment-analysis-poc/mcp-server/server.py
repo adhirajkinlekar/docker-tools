@@ -9,6 +9,7 @@ Transport: SSE on port 8000  →  http://localhost:8000/sse
 import os
 import json
 import logging
+import requests as http
 from fastmcp import FastMCP
 from tools.blob_tools import BlobTools
 from tools.db_tools import DbTools
@@ -20,6 +21,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Initialise dependencies ──────────────────────────────────────────────────
+
+INDEXER_URL = os.environ.get("INDEXER_URL", "http://indexer:8001")
 
 blob = BlobTools(
     endpoint=os.environ["MINIO_ENDPOINT"],
@@ -133,6 +136,37 @@ def get_container_summary(bucket: str = "payments") -> str:
     """
     logger.info("get_container_summary(bucket=%s)", bucket)
     return blob.get_container_summary(bucket)
+
+
+@mcp.tool()
+def rag_search_payments(query: str, limit: int = 10) -> str:
+    """
+    Semantic vector search over pre-indexed ACH summaries from Archive.
+
+    Use this tool INSTEAD of fetch_and_parse_ach_files when the user asks about
+    the 'Archive' folder. Files there are indexed at upload time and
+    can be queried with natural language – no need to fetch raw files.
+
+    Returns ranked batch summaries with company name, date, credit/debit totals,
+    and relevance score.
+
+    Args:
+        query: Natural language query, e.g. "high credit volume June 2026",
+               "DIGITAL MERCHANTS debits", "which companies had anomalous batches"
+        limit: Maximum number of results to return (default: 10, max: 50)
+    """
+    logger.info("rag_search_payments(query='%s', limit=%d)", query, limit)
+    try:
+        resp = http.get(
+            f"{INDEXER_URL}/search",
+            params={"q": query, "limit": limit},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return json.dumps(resp.json(), indent=2)
+    except Exception as exc:
+        logger.exception("rag_search_payments failed")
+        return json.dumps({"error": str(exc)})
 
 
 @mcp.tool()
