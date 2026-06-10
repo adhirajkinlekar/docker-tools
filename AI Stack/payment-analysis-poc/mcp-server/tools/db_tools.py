@@ -1,14 +1,23 @@
 """
 MSSQL database tools.
 Queries client records and transaction history matched against ACH company data.
+
+Improvements over v1:
+  • SQL injection fix: days parameter is now fully parameterized (no string interpolation)
+  • Connection retry with exponential backoff for transient DB unavailability
+  • Generic error messages returned to caller (detail stays in server logs)
 """
 
 import json
 import logging
+import time
 from typing import Any
 import pymssql
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETRIES   = 3
+_RETRY_DELAY   = 1.0   # seconds; doubles each attempt
 
 
 def _serialize(row: dict) -> dict:
@@ -29,7 +38,22 @@ class DbTools:
         self._cfg = dict(server=server, user=username, password=password, database=database)
 
     def _conn(self):
-        return pymssql.connect(**self._cfg, as_dict=True, login_timeout=10)
+        """Open a connection with retry backoff for transient failures."""
+        last_exc = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return pymssql.connect(**self._cfg, as_dict=True, login_timeout=10)
+            except pymssql.OperationalError as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRIES - 1:
+                    delay = _RETRY_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "DB connection failed (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, _MAX_RETRIES, delay, exc,
+                    )
+                    time.sleep(delay)
+        logger.error("DB connection failed after %d attempts: %s", _MAX_RETRIES, last_exc)
+        raise last_exc
 
     # ------------------------------------------------------------------ #
 
@@ -75,21 +99,22 @@ class DbTools:
 
             return json.dumps(
                 {
-                    "query": "client_info",
+                    "query":                "client_info",
                     "identifiers_searched": company_identifiers,
-                    "match_count": len(rows),
-                    "clients": rows,
+                    "match_count":          len(rows),
+                    "clients":              rows,
                 },
                 indent=2,
             )
         except Exception as e:
             logger.exception("get_client_info error")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": "Database query failed. Please try again."})
 
     # ------------------------------------------------------------------ #
 
     def get_client_recent_transactions(self, client_id: str, days: int = 30) -> str:
         """Return recent transactions for a single client."""
+        # Fully parameterized – no string interpolation of user-supplied values
         query = """
             SELECT
                 t.transaction_id,
@@ -102,13 +127,13 @@ class DbTools:
                 t.reference_number
             FROM client_transactions t
             WHERE t.client_id = %s
-              AND t.transaction_date >= DATEADD(day, -%d, GETDATE())
+              AND t.transaction_date >= DATEADD(day, -%s, GETDATE())
             ORDER BY t.transaction_date DESC
         """
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cur.execute(query % ("%s", days), (client_id,))
+                cur.execute(query, (client_id, int(days)))
                 rows = [_serialize(r) for r in cur.fetchall()]
 
             total_credit = sum(float(r["amount"]) for r in rows if r["transaction_type"] == "CREDIT")
@@ -116,24 +141,24 @@ class DbTools:
 
             return json.dumps(
                 {
-                    "client_id": client_id,
-                    "period_days": days,
+                    "client_id":         client_id,
+                    "period_days":       days,
                     "transaction_count": len(rows),
-                    "total_credit": round(total_credit, 2),
-                    "total_debit": round(total_debit, 2),
-                    "net_position": round(total_credit - total_debit, 2),
-                    "transactions": rows,
+                    "total_credit":      round(total_credit, 2),
+                    "total_debit":       round(total_debit,  2),
+                    "net_position":      round(total_credit - total_debit, 2),
+                    "transactions":      rows,
                 },
                 indent=2,
             )
         except Exception as e:
             logger.exception("get_client_recent_transactions error")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": "Database query failed. Please try again."})
 
     # ------------------------------------------------------------------ #
 
     def get_all_clients(self) -> str:
-        """Return a full list of clients (no transaction detail)."""
+        """Return a summary list of clients (no transaction detail)."""
         query = """
             SELECT client_id, company_name, ach_company_id,
                    account_status, credit_limit, industry, risk_rating
@@ -148,4 +173,4 @@ class DbTools:
             return json.dumps({"clients": rows, "count": len(rows)}, indent=2)
         except Exception as e:
             logger.exception("get_all_clients error")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": "Database query failed. Please try again."})

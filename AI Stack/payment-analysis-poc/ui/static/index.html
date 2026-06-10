@@ -638,6 +638,7 @@
   let activityEl  = null;
   let thinkingEl  = null;
   let agentBubble = null;
+  let tokenBuf    = [];   // accumulates streaming tokens before markdown render
 
   function startAgentTurn() {
     activityEl = document.createElement("div");
@@ -670,14 +671,45 @@
     if (chip) chip.classList.add("done");
   }
 
-  function showAnswer(markdown, cacheLabel = null) {
-    // Remove thinking indicator
+  function _ensureAgentBubble() {
+    if (agentBubble) return;
     if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-
     const row = document.createElement("div");
     row.className = "msg-row agent";
-    agentBubble   = document.createElement("div");
+    agentBubble = document.createElement("div");
     agentBubble.className = "bubble";
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.textContent = "🤖";
+    row.appendChild(avatar);
+    row.appendChild(agentBubble);
+    messagesEl.appendChild(row);
+  }
+
+  function appendToken(token) {
+    _ensureAgentBubble();
+    tokenBuf.push(token);
+    // Show raw text while streaming – snaps to markdown on message event
+    agentBubble.textContent = tokenBuf.join("");
+    scrollBottom();
+  }
+
+  function showAnswer(markdown, cacheLabel = null) {
+    tokenBuf = [];
+    if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+
+    if (!agentBubble) {
+      const row = document.createElement("div");
+      row.className = "msg-row agent";
+      agentBubble = document.createElement("div");
+      agentBubble.className = "bubble";
+      const avatar = document.createElement("div");
+      avatar.className = "avatar";
+      avatar.textContent = "🤖";
+      row.appendChild(avatar);
+      row.appendChild(agentBubble);
+      messagesEl.appendChild(row);
+    }
 
     if (cacheLabel) {
       agentBubble.innerHTML =
@@ -685,15 +717,19 @@
     } else {
       agentBubble.innerHTML = marked.parse(markdown);
     }
-
-    const avatar = document.createElement("div");
-    avatar.className = "avatar";
-    avatar.textContent = "🤖";
-
-    row.appendChild(avatar);
-    row.appendChild(agentBubble);
-    messagesEl.appendChild(row);
+    agentBubble = null;   // reset for next turn
     scrollBottom();
+  }
+
+  function clearCurrentResponse() {
+    // Called when provider switches mid-stream – clears the partial bubble
+    tokenBuf = [];
+    if (agentBubble) {
+      agentBubble.closest(".msg-row")?.remove();
+      agentBubble = null;
+    }
+    if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+    if (activityEl) { activityEl.innerHTML = ""; }
   }
 
   function showError(msg) {
@@ -731,6 +767,8 @@
     inputEl.style.height = "auto";
     sendBtn.disabled = true;
 
+    agentBubble = null;
+    tokenBuf    = [];
     appendUserMsg(text);
     startAgentTurn();
 
@@ -761,6 +799,12 @@
           let evt;
           try { evt = JSON.parse(line.slice(6)); } catch { continue; }
 
+          if (evt.type === "token") {
+            // Live streaming token – append to bubble before markdown render
+            if (lastToolName) { finishToolChip(lastToolName); lastToolName = null; }
+            appendToken(evt.content || "");
+          }
+
           if (evt.type === "tool_call") {
             if (lastToolName) finishToolChip(lastToolName);
             lastToolName = evt.name;
@@ -775,9 +819,15 @@
           }
 
           if (evt.type === "message") {
+            // Final event – re-render accumulated tokens as proper markdown
             if (lastToolName) finishToolChip(lastToolName);
             lastToolName = null;
             showAnswer(evt.content || "", null);
+          }
+
+          if (evt.type === "clear_response") {
+            // Provider switched mid-stream – clear partial response
+            clearCurrentResponse();
           }
 
           if (evt.type === "provider_switch") {
@@ -791,6 +841,8 @@
 
           if (evt.type === "done") {
             if (lastToolName) finishToolChip(lastToolName);
+            agentBubble = null;
+            tokenBuf    = [];
           }
         }
       }

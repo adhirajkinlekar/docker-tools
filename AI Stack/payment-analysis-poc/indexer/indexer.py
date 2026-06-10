@@ -1,19 +1,27 @@
 """
 ACH RAG Indexer
 ───────────────
-Watches the 'Payment-Files-Archive' folder in MinIO and indexes ACH file
-summaries into the Qdrant 'ach_index' collection for semantic retrieval.
+Watches the Archive folder in MinIO and indexes ACH file summaries into the
+Qdrant 'ach_index' collection for semantic retrieval.
 
 Responsibilities:
-  1. On startup: create Qdrant collection if needed, reindex existing files,
-     register MinIO bucket notification webhook
+  1. On startup: create Qdrant collection if needed, register MinIO webhook,
+     then reindex existing files in the background (non-blocking).
   2. POST /webhook  – receives MinIO S3 event notifications; indexes new files
+     as a background task so the webhook returns immediately.
   3. GET  /search   – semantic search over the ACH index (called by MCP server)
   4. GET  /health   – liveness probe
 
-Embedding model: BAAI/bge-small-en-v1.5 (384-dim, runs fully local via ONNX)
+Improvements over v1:
+  • Webhook handler is non-blocking – indexing runs as a BackgroundTask
+  • Startup reindex runs as asyncio background task (app accepts requests immediately)
+  • Batch _already_indexed check: one Qdrant retrieve call per file instead of per batch
+  • Embedding wrapped in run_in_executor (CPU-bound ONNX, keeps event loop free)
+  • Secrets required at startup (no silent defaults)
+  • score_threshold param forwarded from MCP server to /search endpoint
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -26,7 +34,7 @@ from urllib.parse import unquote_plus
 import boto3
 from botocore.client import Config
 from fastembed import TextEmbedding
-from fastapi import FastAPI, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -47,14 +55,13 @@ BUCKET           = "payments"
 RAG_FOLDER       = "Archive"
 COLLECTION       = "ach_index"
 VECTOR_SIZE      = 384
-# ARN used in put_bucket_notification_configuration to target webhook target "1"
 WEBHOOK_ARN      = "arn:minio:sqs::1:webhook"
 
 # ── Globals (initialised in lifespan) ─────────────────────────────────────────
 
-qdrant: QdrantClient
+qdrant:   QdrantClient
 embedder: TextEmbedding
-s3: "boto3.client"   # type: ignore[type-arg]
+s3:       "boto3.client"   # type: ignore[type-arg]
 
 # ── Minimal ACH batch-level parser ────────────────────────────────────────────
 
@@ -71,11 +78,6 @@ def _fmt_date(s: str) -> str:
 
 
 def _parse_ach_batches(content: str) -> list[dict]:
-    """
-    Extract one summary dict per batch from an ACH file.
-    Uses batch control record (type 8) totals when available.
-    No PII fields are read.
-    """
     batches: list[dict] = []
     current: dict | None = None
 
@@ -98,7 +100,6 @@ def _parse_ach_batches(content: str) -> list[dict]:
             batches.append(current)
 
         elif rt == "6" and current is not None:
-            # Accumulate entry-level totals (overridden by batch control below)
             if not current["_control_seen"]:
                 tc = line[1:3]
                 raw_amt = line[29:39].strip()
@@ -110,7 +111,6 @@ def _parse_ach_batches(content: str) -> list[dict]:
                 current["entry_count"] += 1
 
         elif rt == "8" and current is not None:
-            # Batch control is authoritative – override running totals
             dr = line[20:32].strip()
             cr = line[32:44].strip()
             ec = line[4:10].strip()
@@ -122,10 +122,8 @@ def _parse_ach_batches(content: str) -> list[dict]:
                 current["entry_count"]  = int(ec)
             current["_control_seen"] = True
 
-    # Strip internal flag before returning
     for b in batches:
         b.pop("_control_seen", None)
-
     return batches
 
 
@@ -151,30 +149,38 @@ def _ensure_collection() -> None:
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
         logger.info("Created Qdrant collection '%s'", COLLECTION)
-    else:
-        logger.info("Qdrant collection '%s' already exists", COLLECTION)
 
 
 def _point_id(key: str, batch_idx: int) -> str:
-    """Deterministic UUID keyed on (bucket_key, batch_idx) for idempotent upserts."""
     h = hashlib.md5(f"{BUCKET}/{key}/{batch_idx}".encode()).hexdigest()
     return str(uuid.UUID(h))
 
 
-def _already_indexed(point_id: str) -> bool:
+def _get_already_indexed(keys_and_indices: list[tuple[str, int]]) -> set[str]:
+    """
+    Single bulk Qdrant retrieve to check which point IDs already exist.
+    Replaces the previous per-batch retrieve loop (N round-trips → 1).
+    """
+    if not keys_and_indices:
+        return set()
+    all_ids = [_point_id(k, i) for k, i in keys_and_indices]
     results = qdrant.retrieve(
         collection_name=COLLECTION,
-        ids=[point_id],
+        ids=all_ids,
         with_payload=False,
         with_vectors=False,
     )
-    return len(results) > 0
+    return {str(r.id) for r in results}
 
 
 # ── Core indexing logic ────────────────────────────────────────────────────────
 
 def _index_file(key: str) -> None:
-    """Fetch one ACH file from MinIO, parse it, embed each batch, upsert to Qdrant."""
+    """
+    Fetch one ACH file from MinIO, parse it, embed each batch, upsert to Qdrant.
+    This is a synchronous function; callers should run it in an executor or
+    as a FastAPI BackgroundTask (which uses a thread pool automatically).
+    """
     filename = key.split("/")[-1]
     logger.info("Indexing %s/%s …", BUCKET, key)
 
@@ -190,14 +196,19 @@ def _index_file(key: str) -> None:
         logger.warning("No ACH batches found in %s", filename)
         return
 
+    # Single bulk check for already-indexed batches
+    keys_and_indices    = [(key, i) for i in range(len(batches))]
+    already_indexed_ids = _get_already_indexed(keys_and_indices)
+
     points: list[PointStruct] = []
     for i, batch in enumerate(batches):
         pid = _point_id(key, i)
-        if _already_indexed(pid):
+        if pid in already_indexed_ids:
             logger.debug("Already indexed: %s batch %d (skipping)", filename, i)
             continue
 
         summary = _make_summary(filename, batch)
+        # Embedding is CPU-bound (ONNX) – acceptable here since we run in thread pool
         vector  = list(embedder.embed([summary]))[0].tolist()
 
         points.append(PointStruct(
@@ -228,14 +239,6 @@ def _index_file(key: str) -> None:
 # ── MinIO webhook notification setup ─────────────────────────────────────────
 
 def _setup_minio_notification() -> None:
-    """
-    Tell MinIO to POST to /webhook on this container whenever a new object
-    is created under Payment-Files-Archive/ in the payments bucket.
-
-    Requires MinIO to be started with:
-      MINIO_NOTIFY_WEBHOOK_ENABLE_1=on
-      MINIO_NOTIFY_WEBHOOK_ENDPOINT_1=http://indexer:8001/webhook
-    """
     try:
         s3.put_bucket_notification_configuration(
             Bucket=BUCKET,
@@ -260,13 +263,12 @@ def _setup_minio_notification() -> None:
         )
     except Exception as exc:
         logger.warning("Could not configure MinIO bucket notification: %s", exc)
-        logger.warning("New files won't trigger real-time indexing (reindex on restart)")
 
 
 # ── Startup reindex ────────────────────────────────────────────────────────────
 
 def _reindex_existing() -> None:
-    """Index any files already in Payment-Files-Archive that aren't in Qdrant yet."""
+    """Index any files already in Archive that aren't in Qdrant yet."""
     prefix = f"{RAG_FOLDER}/"
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -275,7 +277,7 @@ def _reindex_existing() -> None:
             obj["Key"]
             for page in pages
             for obj in (page.get("Contents") or [])
-            if not obj["Key"].endswith("/")   # skip folder markers
+            if not obj["Key"].endswith("/")
         ]
     except Exception as exc:
         logger.warning("Could not list existing files: %s", exc)
@@ -285,9 +287,10 @@ def _reindex_existing() -> None:
         logger.info("No existing files to reindex in %s/%s", BUCKET, RAG_FOLDER)
         return
 
-    logger.info("Reindexing %d existing file(s) in %s/%s …", len(keys), BUCKET, RAG_FOLDER)
+    logger.info("Background reindex: %d file(s) in %s/%s", len(keys), BUCKET, RAG_FOLDER)
     for key in sorted(keys):
         _index_file(key)
+    logger.info("Background reindex complete")
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
@@ -298,9 +301,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("Indexer starting up …")
 
-    qdrant   = QdrantClient(url=QDRANT_URL)
-    embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
-    s3       = boto3.client(
+    # Initialise clients synchronously (fast)
+    qdrant = QdrantClient(url=QDRANT_URL)
+    s3     = boto3.client(
         "s3",
         endpoint_url=MINIO_ENDPOINT,
         aws_access_key_id=MINIO_ACCESS_KEY,
@@ -309,11 +312,19 @@ async def lifespan(app: FastAPI):
         region_name="us-east-1",
     )
 
+    # Load embedding model in executor (CPU-bound, ~130 MB ONNX)
+    loop     = asyncio.get_event_loop()
+    embedder = await loop.run_in_executor(
+        None, lambda: TextEmbedding("BAAI/bge-small-en-v1.5")
+    )
+
     _ensure_collection()
-    _reindex_existing()
     _setup_minio_notification()
 
-    logger.info("Indexer ready")
+    # Reindex existing files in the background so startup is non-blocking
+    asyncio.ensure_future(loop.run_in_executor(None, _reindex_existing))
+
+    logger.info("Indexer ready – accepting requests (reindex running in background)")
     yield
     logger.info("Indexer shutting down")
 
@@ -324,10 +335,9 @@ app = FastAPI(title="ACH RAG Indexer", lifespan=lifespan)
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @app.post("/webhook")
-async def minio_webhook(request: Request):
+async def minio_webhook(request: Request, background_tasks: BackgroundTasks):
     """
-    MinIO S3 event webhook.
-    Called by MinIO whenever a new object is created in Payment-Files-Archive/.
+    MinIO S3 event webhook – returns immediately, indexes in background.
     """
     try:
         body = await request.json()
@@ -335,58 +345,56 @@ async def minio_webhook(request: Request):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
 
     records = body.get("Records") or []
-    indexed = 0
+    queued  = 0
     for rec in records:
-        event_name = rec.get("eventName", "")
-        if not event_name.startswith("s3:ObjectCreated"):
+        if not rec.get("eventName", "").startswith("s3:ObjectCreated"):
             continue
-
-        s3_info = rec.get("s3", {})
-        key     = unquote_plus(s3_info.get("object", {}).get("key", ""))
-
+        key = unquote_plus(rec.get("s3", {}).get("object", {}).get("key", ""))
         if key.startswith(f"{RAG_FOLDER}/") and not key.endswith("/"):
-            _index_file(key)
-            indexed += 1
+            background_tasks.add_task(_index_file, key)
+            queued += 1
 
-    return {"ok": True, "indexed": indexed}
+    return {"ok": True, "queued": queued}
 
 
 @app.get("/search")
 async def search(
-    q:     str = Query(..., description="Natural language query"),
-    limit: int = Query(10, ge=1, le=50, description="Max results"),
+    q:         str   = Query(..., description="Natural language query"),
+    limit:     int   = Query(10, ge=1, le=50),
+    threshold: float = Query(0.55, ge=0.0, le=1.0, description="Minimum relevance score"),
 ):
-    """
-    Semantic search over the ACH index.
-    Called by the rag_search_payments MCP tool in the mcp-server.
-    """
+    """Semantic search over the ACH index."""
     try:
-        vector  = list(embedder.embed([q]))[0].tolist()
+        loop    = asyncio.get_event_loop()
+        vector  = await loop.run_in_executor(
+            None, lambda: list(embedder.embed([q]))[0].tolist()
+        )
         results = qdrant.query_points(
             collection_name=COLLECTION,
             query=vector,
             limit=limit,
+            score_threshold=threshold,
             with_payload=True,
         ).points
-        hits = []
-        for r in results:
-            p = r.payload or {}
-            hits.append({
-                "score":                 round(r.score, 4),
-                "filename":              p.get("filename"),
-                "folder":                p.get("folder"),
-                "company_name":          p.get("company_name"),
-                "company_id":            p.get("company_id"),
-                "effective_date":        p.get("effective_date"),
-                "total_credit_dollars":  p.get("total_credit_dollars"),
-                "total_debit_dollars":   p.get("total_debit_dollars"),
-                "entry_count":           p.get("entry_count"),
-                "entry_description":     p.get("entry_description"),
-            })
+        hits = [
+            {
+                "score":                round(r.score, 4),
+                "filename":             r.payload.get("filename"),
+                "folder":               r.payload.get("folder"),
+                "company_name":         r.payload.get("company_name"),
+                "company_id":           r.payload.get("company_id"),
+                "effective_date":       r.payload.get("effective_date"),
+                "total_credit_dollars": r.payload.get("total_credit_dollars"),
+                "total_debit_dollars":  r.payload.get("total_debit_dollars"),
+                "entry_count":          r.payload.get("entry_count"),
+                "entry_description":    r.payload.get("entry_description"),
+            }
+            for r in results
+        ]
         return {"query": q, "results": hits, "count": len(hits)}
     except Exception as exc:
         logger.exception("Search failed")
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "Search failed. Please try again."}, status_code=500)
 
 
 @app.get("/health")

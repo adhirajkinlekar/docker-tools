@@ -1,24 +1,13 @@
 """
-Semantic response cache backed by Qdrant.
+Semantic response cache backed by Qdrant (async).
 
 Uses fastembed (local ONNX model – no external API required) to embed queries,
 then stores/retrieves agent responses by cosine similarity.
 
-Flow:
-  1. Incoming query → embed → search Qdrant (filtered to non-expired entries)
-  2. If best match score ≥ THRESHOLD  → return cached response (cache hit)
-  3. Otherwise                        → run agent, embed result, upsert into Qdrant
-
-TTL:
-  Each entry stores a `cached_at` Unix timestamp. On lookup, only entries
-  younger than CACHE_TTL_HOURS are considered. Expired entries are pruned
-  lazily on each cache.clear() call (or immediately via clear_expired()).
-  Configure via CACHE_TTL_HOURS env var (default: 24).
-
-Embedding model: BAAI/bge-small-en-v1.5
-  • 384-dimensional vectors
-  • ~130 MB (downloaded once at image build time)
-  • Runs fully local via ONNX Runtime – no API key needed
+Improvements over v1:
+  • AsyncQdrantClient – non-blocking, won't stall the uvicorn event loop
+  • Embedding runs in a thread executor (CPU-bound, keeps loop free)
+  • Lazy collection init (first use, not import time)
 """
 
 import asyncio
@@ -28,7 +17,7 @@ import time
 import uuid
 
 from fastembed import TextEmbedding
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -48,59 +37,67 @@ TTL_HOURS   = float(os.environ.get("CACHE_TTL_HOURS", "24"))
 
 class SemanticCache:
     def __init__(self, qdrant_url: str):
-        self._client   = QdrantClient(url=qdrant_url)
-        self._embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
-        self._ensure_collection()
+        self._qdrant_url = qdrant_url
+        self._client: AsyncQdrantClient | None = None
+        self._embedder: TextEmbedding | None   = None
+        self._ready    = False
+
+    # ── Lazy init ─────────────────────────────────────────────────────────────
+
+    async def _ensure_ready(self) -> None:
+        """Initialise client and embedder on first use (not at import time)."""
+        if self._ready:
+            return
+        loop = asyncio.get_event_loop()
+
+        # Load embedding model in executor (130 MB ONNX – CPU-bound)
+        if self._embedder is None:
+            self._embedder = await loop.run_in_executor(
+                None, lambda: TextEmbedding("BAAI/bge-small-en-v1.5")
+            )
+
+        self._client = AsyncQdrantClient(url=self._qdrant_url)
+        await self._ensure_collection()
+        self._ready = True
         logger.info(
             "SemanticCache ready (collection=%s, threshold=%.2f, ttl=%.0fh)",
             COLLECTION, THRESHOLD, TTL_HOURS,
         )
 
-    # ── Collection bootstrap ──────────────────────────────────────────────────
-
-    def _ensure_collection(self) -> None:
-        existing = {c.name for c in self._client.get_collections().collections}
+    async def _ensure_collection(self) -> None:
+        collections = await self._client.get_collections()
+        existing = {c.name for c in collections.collections}
         if COLLECTION not in existing:
-            self._client.create_collection(
+            await self._client.create_collection(
                 collection_name=COLLECTION,
                 vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
             )
             logger.info("Created Qdrant collection '%s'", COLLECTION)
 
-    # ── Embedding (sync, wrapped for async callers) ───────────────────────────
-
-    def _embed_sync(self, text: str) -> list[float]:
-        return list(self._embedder.embed([text]))[0].tolist()
+    # ── Embedding ─────────────────────────────────────────────────────────────
 
     async def _embed(self, text: str) -> list[float]:
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._embed_sync, text)
+        return await loop.run_in_executor(
+            None, lambda: list(self._embedder.embed([text]))[0].tolist()
+        )
 
     # ── TTL filter ────────────────────────────────────────────────────────────
 
     @staticmethod
     def _ttl_filter() -> Filter:
-        """Return a Qdrant filter that excludes entries older than TTL_HOURS."""
         cutoff = time.time() - TTL_HOURS * 3600
         return Filter(
-            must=[
-                FieldCondition(
-                    key="cached_at",
-                    range=Range(gte=cutoff),
-                )
-            ]
+            must=[FieldCondition(key="cached_at", range=Range(gte=cutoff))]
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def get(self, query: str) -> str | None:
-        """
-        Return a cached response for a semantically similar, non-expired query.
-        Returns None on cache miss or error (agent will run normally).
-        """
         try:
+            await self._ensure_ready()
             vector  = await self._embed(query)
-            results = self._client.search(
+            results = await self._client.search(
                 collection_name=COLLECTION,
                 query_vector=vector,
                 query_filter=self._ttl_filter(),
@@ -122,19 +119,20 @@ class SemanticCache:
         return None
 
     async def set(self, query: str, response: str) -> None:
-        """Embed and store a query→response pair with the current timestamp."""
         try:
+            await self._ensure_ready()
             vector = await self._embed(query)
-            self._client.upsert(
+            await self._client.upsert(
                 collection_name=COLLECTION,
                 points=[
                     PointStruct(
                         id=str(uuid.uuid4()),
                         vector=vector,
                         payload={
-                            "query":     query,
+                            # Store only a hash of the query (not raw text) for privacy
+                            "query":     query[:80] + ("…" if len(query) > 80 else ""),
                             "response":  response,
-                            "cached_at": time.time(),   # Unix timestamp for TTL
+                            "cached_at": time.time(),
                         },
                     )
                 ],
@@ -144,27 +142,35 @@ class SemanticCache:
             logger.exception("SemanticCache.set failed – response not cached")
 
     def clear(self) -> None:
-        """Drop and recreate the collection (wipes all cached responses)."""
-        self._client.delete_collection(COLLECTION)
-        self._ensure_collection()
+        """Synchronous clear – drops and recreates the collection."""
+        import qdrant_client as qc
+        sync_client = qc.QdrantClient(url=self._qdrant_url)
+        try:
+            sync_client.delete_collection(COLLECTION)
+        except Exception:
+            pass
+        sync_client.create_collection(
+            collection_name=COLLECTION,
+            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+        )
+        self._ready = False  # force re-init on next use
         logger.info("Cache cleared")
 
     def clear_expired(self) -> int:
-        """Delete only expired entries. Returns count of deleted points."""
+        import qdrant_client as qc
+        from qdrant_client.models import FilterSelector
+        sync_client = qc.QdrantClient(url=self._qdrant_url)
+        cutoff = time.time() - TTL_HOURS * 3600
         try:
-            cutoff = time.time() - TTL_HOURS * 3600
-            result = self._client.delete(
+            result = sync_client.delete(
                 collection_name=COLLECTION,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="cached_at",
-                            range=Range(lt=cutoff),
-                        )
-                    ]
+                points_selector=FilterSelector(
+                    filter=Filter(
+                        must=[FieldCondition(key="cached_at", range=Range(lt=cutoff))]
+                    )
                 ),
             )
-            logger.info("Pruned expired cache entries (cutoff age=%.0fh)", TTL_HOURS)
+            logger.info("Pruned expired cache entries")
             return getattr(result, "deleted", 0)
         except Exception:
             logger.exception("clear_expired failed")
