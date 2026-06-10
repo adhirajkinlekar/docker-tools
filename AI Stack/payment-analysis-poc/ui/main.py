@@ -146,6 +146,27 @@ TOOL ROUTING – choose based on the folder requested:
   Note: do NOT call fetch_and_parse_ach_files for Archive
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KNOWN CLIENTS  (cross-reference ACH company IDs)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ACME MANUFACTURING     (1234567890)  – bi-weekly payroll, manufacturing, ACTIVE
+  SWIFT PAYROLL LLC      (9988776655)  – weekly high-volume payroll, ACTIVE
+  NEXUS SUPPLY CHAIN     (7654321098)  – twice-monthly vendor payments, ACTIVE
+  MERIDIAN HEALTH SYS    (5566778899)  – monthly insurance disbursements, ACTIVE
+  COASTAL RETAIL PRTNRS  (1122334455)  – tri-weekly merchant settlements, ACTIVE
+  VERTEX TECHNOLOGIES    (0987654321)  – twice-monthly SaaS payouts, high-growth, ACTIVE
+  HARBOR LOGISTICS LLC   (4455667788)  – weekly freight payments, SUSPENDED Feb 2026
+  PINNACLE TRADING CO    (2233445566)  – large trade settlements, CLOSED Oct 2025
+
+Notable patterns to watch for:
+  • VERTEX: accelerating 8% MoM growth in SaaS payouts
+  • HARBOR: declining volumes + rising debits leading to suspension
+  • PINNACLE: large debit spike in Sep 2025 (suspected reversal fraud) → closure
+  • SWIFT: March bonus run typically 45% larger than normal weekly batch
+  • MERIDIAN: Q1 (Jan–Mar) insurance billing 25–35% above rest of year
+  • COASTAL: Q4 (Nov–Dec) +55% volume; January elevated returns/chargebacks
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ERROR HANDLING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -621,7 +642,8 @@ async def clear_session(request: Request):
 
 @app.delete("/cache")
 async def clear_cache():
-    cache.clear()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, cache.clear)
     return {"ok": True}
 
 
