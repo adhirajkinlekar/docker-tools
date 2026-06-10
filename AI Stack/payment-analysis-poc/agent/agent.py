@@ -64,7 +64,7 @@ IMPORTANT: ACH files contain PII (account numbers, names, individual IDs).
 These are automatically redacted before being returned to you – you will see
 [REDACTED] in those fields. Never attempt to reconstruct redacted values.
 
-When asked to analyse a folder (e.g. "Analyse payment files in IMM-CTC-DROP"):
+When asked to analyse a folder (e.g. "Analyse payment files in Active"):
 1. Call fetch_and_parse_ach_files to retrieve and parse the ACH data
 2. Extract company_name / company_identification values from batch headers
 3. Call get_client_info with those identifiers

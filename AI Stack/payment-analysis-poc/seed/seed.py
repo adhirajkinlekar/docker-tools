@@ -2,9 +2,8 @@
 Seed script – generates valid NACHA ACH files and uploads them to MinIO.
 
 Folder structure in the 'payments' bucket:
-  IMM-CTC-DROP/    ← matches the example prompt "Analyse payment files in IMM-CTC-DROP"
-  CORP-BATCH/
-  HEALTH-PAYMENTS/
+  Active/   ← live payment files (ACME CORP + PAYROLL EXPRESS)
+  Archive/  ← RAG-indexed historical files (NEXUS PAYMENTS + DIGITAL MERCHANTS)
 
 Each folder contains current files (June 2026) plus 5 months of historical files
 (January–May 2026) to give the agent context for trend analysis.
@@ -12,10 +11,6 @@ Each folder contains current files (June 2026) plus 5 months of historical files
 Historical patterns baked in:
   ACME CORP        – steady credits, ~5% month-on-month growth
   PAYROLL EXPRESS  – consistent large payroll; March has anomalous spike (bonus run)
-  RETAIL SOLUTIONS – healthy Jan, then declining amounts + growing returns each month,
-                     only returns by May → now SUSPENDED in the database by June
-  GLOBAL TECH      – accelerating corporate transfer volumes
-  HEALTH SERVICES  – higher volumes in Q1 (winter billing cycle), plateau in Q2
 
 Company IDs match the clients seeded in PaymentDB.
 """
@@ -258,12 +253,12 @@ def generate_ach(
 SAMPLES = [
 
     # ═══════════════════════════════════════════════════════════════
-    # IMM-CTC-DROP
+    # Active
     # ═══════════════════════════════════════════════════════════════
 
     # ── ACME CORP: steady credits, ~5% month-on-month growth ─────
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260115_ACME.ach",
+        "folder": "Active", "name": "ACH_20260115_ACME.ach",
         "company_name": "ACME CORP", "company_id": "1234567890",
         "effective_date": "260115",
         "entries": [
@@ -275,7 +270,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260215_ACME.ach",
+        "folder": "Active", "name": "ACH_20260215_ACME.ach",
         "company_name": "ACME CORP", "company_id": "1234567890",
         "effective_date": "260215",
         "entries": [
@@ -287,7 +282,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260315_ACME.ach",
+        "folder": "Active", "name": "ACH_20260315_ACME.ach",
         "company_name": "ACME CORP", "company_id": "1234567890",
         "effective_date": "260315",
         "entries": [
@@ -299,7 +294,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260415_ACME.ach",
+        "folder": "Active", "name": "ACH_20260415_ACME.ach",
         "company_name": "ACME CORP", "company_id": "1234567890",
         "effective_date": "260415",
         "entries": [
@@ -311,7 +306,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260515_ACME.ach",
+        "folder": "Active", "name": "ACH_20260515_ACME.ach",
         "company_name": "ACME CORP", "company_id": "1234567890",
         "effective_date": "260515",
         "entries": [
@@ -324,7 +319,7 @@ SAMPLES = [
     },
     # June 2026 – current
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260601_ACME.ach",
+        "folder": "Active", "name": "ACH_20260601_ACME.ach",
         "company_name": "ACME CORP", "company_id": "1234567890",
         "effective_date": "260601",
         "entries": [
@@ -338,7 +333,7 @@ SAMPLES = [
 
     # ── PAYROLL EXPRESS: consistent payroll; March bonus spike ───
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260115_PAYROLL.ach",
+        "folder": "Active", "name": "ACH_20260115_PAYROLL.ach",
         "company_name": "PAYROLL EXPRESS", "company_id": "9988776655",
         "effective_date": "260115",
         "entries": [
@@ -349,7 +344,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260215_PAYROLL.ach",
+        "folder": "Active", "name": "ACH_20260215_PAYROLL.ach",
         "company_name": "PAYROLL EXPRESS", "company_id": "9988776655",
         "effective_date": "260215",
         "entries": [
@@ -361,7 +356,7 @@ SAMPLES = [
     },
     # March – annual bonus run: amounts ~50% higher than normal
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260315_PAYROLL.ach",
+        "folder": "Active", "name": "ACH_20260315_PAYROLL.ach",
         "company_name": "PAYROLL EXPRESS", "company_id": "9988776655",
         "effective_date": "260315",
         "entries": [
@@ -373,7 +368,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260415_PAYROLL.ach",
+        "folder": "Active", "name": "ACH_20260415_PAYROLL.ach",
         "company_name": "PAYROLL EXPRESS", "company_id": "9988776655",
         "effective_date": "260415",
         "entries": [
@@ -384,7 +379,7 @@ SAMPLES = [
         ],
     },
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260515_PAYROLL.ach",
+        "folder": "Active", "name": "ACH_20260515_PAYROLL.ach",
         "company_name": "PAYROLL EXPRESS", "company_id": "9988776655",
         "effective_date": "260515",
         "entries": [
@@ -396,7 +391,7 @@ SAMPLES = [
     },
     # June 2026 – current
     {
-        "folder": "IMM-CTC-DROP", "name": "ACH_20260602_PAYROLL.ach",
+        "folder": "Active", "name": "ACH_20260602_PAYROLL.ach",
         "company_name": "PAYROLL EXPRESS", "company_id": "9988776655",
         "effective_date": "260602",
         "entries": [
@@ -407,140 +402,6 @@ SAMPLES = [
         ],
     },
 
-    # ═══════════════════════════════════════════════════════════════
-    # CORP-BATCH
-    # ═══════════════════════════════════════════════════════════════
-
-    # ── GLOBAL TECH: accelerating volumes ───────────────────────
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260115_GLOBALTECH.ach",
-        "company_name": "GLOBAL TECH INC", "company_id": "0987654321",
-        "effective_date": "260115",
-        "entries": [
-            {"amount":  85000.00, "transaction_code": "22"},
-            {"amount":  60000.00, "transaction_code": "22"},
-            {"amount":   9500.00, "transaction_code": "27"},
-        ],
-    },
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260215_GLOBALTECH.ach",
-        "company_name": "GLOBAL TECH INC", "company_id": "0987654321",
-        "effective_date": "260215",
-        "entries": [
-            {"amount":  92000.00, "transaction_code": "22"},
-            {"amount":  66000.00, "transaction_code": "22"},
-            {"amount":  10000.00, "transaction_code": "27"},
-        ],
-    },
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260315_GLOBALTECH.ach",
-        "company_name": "GLOBAL TECH INC", "company_id": "0987654321",
-        "effective_date": "260315",
-        "entries": [
-            {"amount": 100000.00, "transaction_code": "22"},
-            {"amount":  72000.00, "transaction_code": "22"},
-            {"amount":  10500.00, "transaction_code": "27"},
-        ],
-    },
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260415_GLOBALTECH.ach",
-        "company_name": "GLOBAL TECH INC", "company_id": "0987654321",
-        "effective_date": "260415",
-        "entries": [
-            {"amount": 109000.00, "transaction_code": "22"},
-            {"amount":  78000.00, "transaction_code": "22"},
-            {"amount":  11000.00, "transaction_code": "27"},
-        ],
-    },
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260515_GLOBALTECH.ach",
-        "company_name": "GLOBAL TECH INC", "company_id": "0987654321",
-        "effective_date": "260515",
-        "entries": [
-            {"amount": 117000.00, "transaction_code": "22"},
-            {"amount":  83000.00, "transaction_code": "22"},
-            {"amount":  11500.00, "transaction_code": "27"},
-        ],
-    },
-    # June 2026 – current
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260601_GLOBALTECH.ach",
-        "company_name": "GLOBAL TECH INC", "company_id": "0987654321",
-        "effective_date": "260601",
-        "entries": [
-            {"amount": 125000.00, "transaction_code": "22"},
-            {"amount":  87500.00, "transaction_code": "22"},
-            {"amount":  12000.00, "transaction_code": "27"},
-        ],
-    },
-
-    # ── RETAIL SOLUTIONS: healthy → declining → returns → suspended
-    # January: healthy activity
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260115_RETAIL.ach",
-        "company_name": "RETAIL SOLUTIONS", "company_id": "1122334455",
-        "effective_date": "260115",
-        "entries": [
-            {"amount": 9800.00, "transaction_code": "22"},
-            {"amount": 7200.00, "transaction_code": "22"},
-            {"amount": 3100.00, "transaction_code": "22"},
-        ],
-    },
-    # February: first return appears
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260215_RETAIL.ach",
-        "company_name": "RETAIL SOLUTIONS", "company_id": "1122334455",
-        "effective_date": "260215",
-        "entries": [
-            {"amount": 7500.00, "transaction_code": "22"},
-            {"amount": 5800.00, "transaction_code": "22"},
-            {"amount": 3400.50, "transaction_code": "27"},  # first return
-        ],
-    },
-    # March: returns outnumber credits
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260315_RETAIL.ach",
-        "company_name": "RETAIL SOLUTIONS", "company_id": "1122334455",
-        "effective_date": "260315",
-        "entries": [
-            {"amount": 5200.00, "transaction_code": "22"},
-            {"amount": 3400.50, "transaction_code": "27"},
-            {"amount": 3400.50, "transaction_code": "27"},
-        ],
-    },
-    # April: credit volume collapses
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260415_RETAIL.ach",
-        "company_name": "RETAIL SOLUTIONS", "company_id": "1122334455",
-        "effective_date": "260415",
-        "entries": [
-            {"amount": 3400.50, "transaction_code": "22"},
-            {"amount": 3400.50, "transaction_code": "27"},
-            {"amount": 3400.50, "transaction_code": "27"},
-        ],
-    },
-    # May: only returns – account flagged for review
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260515_RETAIL.ach",
-        "company_name": "RETAIL SOLUTIONS", "company_id": "1122334455",
-        "effective_date": "260515",
-        "entries": [
-            {"amount": 3400.50, "transaction_code": "27"},
-            {"amount": 3400.50, "transaction_code": "27"},
-        ],
-    },
-    # June 2026 – current (minimal volume; account SUSPENDED in DB)
-    {
-        "folder": "CORP-BATCH", "name": "ACH_20260601_RETAIL.ach",
-        "company_name": "RETAIL SOLUTIONS", "company_id": "1122334455",
-        "effective_date": "260601",
-        "entries": [
-            {"amount": 3400.50, "transaction_code": "22"},
-            {"amount": 3400.50, "transaction_code": "22"},
-        ],
-    },
-
-    # ═══════════════════════════════════════════════════════════════
     # Payment-Files-Archive  (RAG-indexed folder)
     # ═══════════════════════════════════════════════════════════════
 
@@ -671,80 +532,6 @@ SAMPLES = [
             {"amount":  14000.00, "transaction_code": "27"},
         ],
     },
-
-    # ═══════════════════════════════════════════════════════════════
-    # HEALTH-PAYMENTS
-    # ═══════════════════════════════════════════════════════════════
-
-    # ── HEALTH SERVICES: higher Q1 (winter billing), plateau Q2 ─
-    {
-        "folder": "HEALTH-PAYMENTS", "name": "ACH_20260115_HEALTH.ach",
-        "company_name": "HEALTH SERVICES", "company_id": "5566778899",
-        "effective_date": "260115",
-        "entries": [
-            {"amount": 14200.00, "transaction_code": "22"},
-            {"amount":  7800.00, "transaction_code": "22"},
-            {"amount": 18500.00, "transaction_code": "27"},
-            {"amount": 11000.00, "transaction_code": "22"},
-        ],
-    },
-    {
-        "folder": "HEALTH-PAYMENTS", "name": "ACH_20260215_HEALTH.ach",
-        "company_name": "HEALTH SERVICES", "company_id": "5566778899",
-        "effective_date": "260215",
-        "entries": [
-            {"amount": 13500.00, "transaction_code": "22"},
-            {"amount":  7200.00, "transaction_code": "22"},
-            {"amount": 17000.00, "transaction_code": "27"},
-            {"amount": 10500.00, "transaction_code": "22"},
-        ],
-    },
-    {
-        "folder": "HEALTH-PAYMENTS", "name": "ACH_20260315_HEALTH.ach",
-        "company_name": "HEALTH SERVICES", "company_id": "5566778899",
-        "effective_date": "260315",
-        "entries": [
-            {"amount": 12000.00, "transaction_code": "22"},
-            {"amount":  6500.00, "transaction_code": "22"},
-            {"amount": 14500.00, "transaction_code": "27"},
-            {"amount":  9500.00, "transaction_code": "22"},
-        ],
-    },
-    {
-        "folder": "HEALTH-PAYMENTS", "name": "ACH_20260415_HEALTH.ach",
-        "company_name": "HEALTH SERVICES", "company_id": "5566778899",
-        "effective_date": "260415",
-        "entries": [
-            {"amount":  9500.00, "transaction_code": "22"},
-            {"amount":  5000.00, "transaction_code": "22"},
-            {"amount": 12000.00, "transaction_code": "27"},
-            {"amount":  7500.00, "transaction_code": "22"},
-        ],
-    },
-    {
-        "folder": "HEALTH-PAYMENTS", "name": "ACH_20260515_HEALTH.ach",
-        "company_name": "HEALTH SERVICES", "company_id": "5566778899",
-        "effective_date": "260515",
-        "entries": [
-            {"amount":  9000.00, "transaction_code": "22"},
-            {"amount":  4500.00, "transaction_code": "22"},
-            {"amount": 11500.00, "transaction_code": "27"},
-            {"amount":  7000.00, "transaction_code": "22"},
-        ],
-    },
-    # June 2026 – current
-    {
-        "folder": "HEALTH-PAYMENTS", "name": "ACH_20260603_HEALTH.ach",
-        "company_name": "HEALTH SERVICES", "company_id": "5566778899",
-        "effective_date": "260603",
-        "entries": [
-            {"amount":  8750.00, "transaction_code": "22"},
-            {"amount":  4200.00, "transaction_code": "22"},
-            {"amount": 11000.00, "transaction_code": "27"},
-            {"amount":  6500.00, "transaction_code": "22"},
-        ],
-    },
-]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

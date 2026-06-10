@@ -134,8 +134,8 @@ attempt to reconstruct redacted values.
 TOOL ROUTING – choose based on the folder requested:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-▸ Any folder EXCEPT Archive  →  use MCP tools
-  1. fetch_and_parse_ach_files(folder_path=<FOLDER>) to get file summaries
+▸ Active folder  →  use MCP tools
+  1. fetch_and_parse_ach_files(folder_path="Active") to get file summaries
   2. get_client_info(company_identifiers=[...]) to look up client records
   3. get_client_recent_transactions(client_id=...) for flagged/high-value clients
   4. Synthesise: file summary, MoM trend, per-company breakdown, risk indicators

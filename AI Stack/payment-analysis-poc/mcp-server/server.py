@@ -102,7 +102,7 @@ def fetch_and_parse_ach_files(folder_path: str, bucket: str = "payments") -> str
     Use this tool for any folder EXCEPT Archive (use rag_search_payments for Archive).
 
     Args:
-        folder_path: Virtual directory path inside the container (e.g. "IMM-CTC-DROP")
+        folder_path: Virtual directory path inside the container (e.g. "Active")
         bucket: Bucket name (default: "payments")
     """
     try:
