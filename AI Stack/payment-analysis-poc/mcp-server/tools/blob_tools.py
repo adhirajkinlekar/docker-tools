@@ -135,6 +135,41 @@ class BlobTools:
                     "batches": batch_summaries,
                 })
 
+            # Build a company-level rollup so the agent has a complete picture
+            # even when the per-file list is truncated by the output limit.
+            company_rollup: dict[str, dict] = {}
+            for r in results:
+                for b in r["batches"]:
+                    cname = b["company_name"]
+                    cid   = b["company_id"]
+                    key   = cid or cname
+                    if key not in company_rollup:
+                        company_rollup[key] = {
+                            "company_name":        cname,
+                            "company_id":          cid,
+                            "file_count":          0,
+                            "total_entries":       0,
+                            "total_credit_dollars": 0.0,
+                            "total_debit_dollars":  0.0,
+                            "date_range":          [],
+                        }
+                    row = company_rollup[key]
+                    row["file_count"]            += 1
+                    row["total_entries"]          += b["entry_count"]
+                    row["total_credit_dollars"]   += b["total_credit_dollars"]
+                    row["total_debit_dollars"]    += b["total_debit_dollars"]
+                    if b.get("effective_date"):
+                        row["date_range"].append(b["effective_date"])
+
+            for row in company_rollup.values():
+                row["total_credit_dollars"] = round(row["total_credit_dollars"], 2)
+                row["total_debit_dollars"]  = round(row["total_debit_dollars"],  2)
+                dates = sorted(set(row["date_range"]))
+                row["date_range"] = {
+                    "earliest": dates[0]  if dates else None,
+                    "latest":   dates[-1] if dates else None,
+                }
+
             return json.dumps({
                 "folder":          folder_path,
                 "bucket":          bucket,
@@ -144,6 +179,9 @@ class BlobTools:
                     "total_debit_dollars":  round(folder_debits,  2),
                     "total_entries":        folder_entries,
                 },
+                # Company rollup comes BEFORE the files list so it survives
+                # any downstream output truncation.
+                "summary_by_company": list(company_rollup.values()),
                 "files": results,
             }, indent=2)
         except ClientError as e:

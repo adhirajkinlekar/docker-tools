@@ -66,6 +66,11 @@ class DbTools:
             return json.dumps({"error": "No identifiers provided"})
 
         placeholders = ", ".join(["%s"] * len(company_identifiers))
+        # LEFT(company_name, 16) handles NACHA batch-header truncation:
+        # the ACH standard limits the Company Name field to 16 characters,
+        # so names like "ACME MANUFACTURING" arrive as "ACME MANUFACTURI".
+        # Matching on the first 16 chars ensures ACH-sourced identifiers
+        # resolve correctly even when the full DB name is longer.
         query = f"""
             SELECT
                 c.client_id,
@@ -84,8 +89,9 @@ class DbTools:
                          ELSE 0 END)                                            AS lifetime_debits
             FROM clients c
             LEFT JOIN client_transactions t ON c.client_id = t.client_id
-            WHERE c.ach_company_id IN ({placeholders})
-               OR c.company_name    IN ({placeholders})
+            WHERE c.ach_company_id       IN ({placeholders})
+               OR c.company_name         IN ({placeholders})
+               OR LEFT(c.company_name, 16) IN ({placeholders})
             GROUP BY
                 c.client_id, c.company_name, c.ach_company_id,
                 c.account_status, c.credit_limit, c.industry,
@@ -94,7 +100,7 @@ class DbTools:
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cur.execute(query, company_identifiers * 2)
+                cur.execute(query, company_identifiers * 3)
                 rows = [_serialize(r) for r in cur.fetchall()]
 
             return json.dumps(

@@ -184,8 +184,40 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── Nginx – reverse proxy + SSL termination ─────────────────────────────────
+  # Handles HTTPS and proxies to the UI.  SSE buffering is disabled so
+  # streaming tokens reach the browser in real time.
+  # Run scripts/init-letsencrypt.sh once to obtain the first certificate.
+  nginx:
+    image: nginx:alpine
+    container_name: poc-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot_www:/var/www/certbot:ro
+      - certbot_certs:/etc/letsencrypt:ro
+    depends_on:
+      - ui
+    restart: unless-stopped
+
+  # ─── Certbot – Let's Encrypt certificate issuance and renewal ────────────────
+  # Normally stays stopped; init-letsencrypt.sh starts it once via `docker compose run`.
+  # For renewal add a cron: docker compose run --rm certbot renew
+  certbot:
+    image: certbot/certbot
+    container_name: poc-certbot
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;"
+    restart: "no"
+
 volumes:
   minio_data:
   mssql_data:
   qdrant_data:
   ollama_data:
+  certbot_www:
+  certbot_certs:

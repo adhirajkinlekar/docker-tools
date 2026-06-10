@@ -67,7 +67,7 @@ MAX_RETRIES       = 2       # retries for transient LLM errors
 RETRY_BASE_DELAY  = 1.0     # seconds; doubles each retry
 
 # Tool output budget
-TOOL_OUTPUT_MAX_CHARS = 6_000  # per tool call
+TOOL_OUTPUT_MAX_CHARS = 20_000  # per tool call (Active folder can have ~50 files)
 
 # Error conditions that trigger provider switch
 _FALLBACK_HTTP_CODES  = {429, 413}
