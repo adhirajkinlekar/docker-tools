@@ -342,6 +342,28 @@
       color: #fff;
     }
 
+    /* ── Active model badge ─────────────────────────────────────── */
+    .model-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .model-badge .model-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      flex-shrink: 0;
+    }
+    .model-badge .model-dot.ollama { background: #f0a030; }
+    .model-badge span { font-family: "JetBrains Mono", "Fira Code", monospace; }
+
     /* ── Provider switch notice ─────────────────────────────────── */
     .provider-notice {
       display: flex;
@@ -444,6 +466,10 @@
       </div>
     </div>
     <div class="header-actions">
+      <div class="model-badge" id="model-badge" title="Active model">
+        <div class="model-dot" id="model-dot"></div>
+        <span id="model-label">loading…</span>
+      </div>
       <div class="provider-selector" title="Choose which AI provider to use">
         <button class="provider-btn active" data-provider="auto">Auto</button>
         <button class="provider-btn" data-provider="primary">External</button>
@@ -504,6 +530,28 @@
   // ── Provider state ────────────────────────────────────────────────────────
   let activeProvider = "auto";
 
+  // ── Model badge ───────────────────────────────────────────────────────────
+  const modelDot   = document.getElementById("model-dot");
+  const modelLabel = document.getElementById("model-label");
+  let providers    = {};
+
+  async function loadProviders() {
+    try {
+      const data = await fetch("/providers").then(r => r.json());
+      providers = data;
+      updateModelBadge("primary");
+    } catch { modelLabel.textContent = "unavailable"; }
+  }
+
+  function updateModelBadge(which) {
+    const isOllama = which === "ollama";
+    const info     = providers[which] || {};
+    modelDot.className   = "model-dot" + (isOllama ? " ollama" : "");
+    modelLabel.textContent = info.model || which;
+  }
+
+  loadProviders();
+
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const messagesEl     = document.getElementById("messages");
   const welcomeEl      = document.getElementById("welcome");
@@ -518,6 +566,8 @@
     btn.addEventListener("click", () => {
       activeProvider = btn.dataset.provider;
       providerBtns.forEach(b => b.classList.toggle("active", b === btn));
+      // update badge: auto shows primary until a switch event overrides it
+      updateModelBadge(activeProvider === "ollama" ? "ollama" : "primary");
     });
   });
 
@@ -732,6 +782,7 @@
 
           if (evt.type === "provider_switch") {
             showProviderNotice(evt.from_provider, evt.to_provider);
+            updateModelBadge(evt.to_provider);
           }
 
           if (evt.type === "error") {

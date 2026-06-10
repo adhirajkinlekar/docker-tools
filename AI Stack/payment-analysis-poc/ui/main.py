@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Literal
 
+import httpx
 import openai
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -31,13 +32,17 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-MCP_SERVER_URL   = os.environ.get("MCP_SERVER_URL",   "http://mcp-server:8000/sse")
-OPENAI_API_KEY   = os.environ.get("OPENAI_API_KEY",   "") or os.environ.get("GITHUB_TOKEN", "")
-OPENAI_BASE_URL  = os.environ.get("OPENAI_BASE_URL",  "")
-PRIMARY_MODEL    = os.environ.get("AGENT_MODEL",      "gpt-4o")
-OLLAMA_BASE_URL  = os.environ.get("OLLAMA_BASE_URL",  "http://ollama:11434/v1")
-OLLAMA_MODEL     = os.environ.get("FALLBACK_MODEL",   "llama3.1:8b")
-QDRANT_URL       = os.environ.get("QDRANT_URL",       "http://qdrant:6333")
+MCP_SERVER_URL        = os.environ.get("MCP_SERVER_URL",       "http://mcp-server:8000/sse")
+OPENAI_API_KEY        = os.environ.get("OPENAI_API_KEY",       "") or os.environ.get("GITHUB_TOKEN", "")
+OPENAI_BASE_URL       = os.environ.get("OPENAI_BASE_URL",      "")
+PRIMARY_MODEL         = os.environ.get("AGENT_MODEL",          "gpt-4o")
+OLLAMA_HOST_URL        = os.environ.get("OLLAMA_HOST_URL",       "http://host.docker.internal:11434/v1")
+OLLAMA_HOST_MODEL      = os.environ.get("OLLAMA_HOST_MODEL",     "qwen2.5:7b")
+OLLAMA_CONTAINER_URL   = os.environ.get("OLLAMA_CONTAINER_URL",  "http://ollama:11434/v1")
+OLLAMA_CONTAINER_MODEL = os.environ.get("OLLAMA_CONTAINER_MODEL","qwen2.5:1.5b")
+# Active model – resolved at startup after detecting which Ollama is reachable
+OLLAMA_MODEL           = OLLAMA_CONTAINER_MODEL  # overridden in startup event
+QDRANT_URL            = os.environ.get("QDRANT_URL",           "http://qdrant:6333")
 
 TOOL_OUTPUT_MAX_CHARS = 2_000
 
@@ -93,9 +98,34 @@ def _make_client(api_key: str, base_url: str | None) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(**kwargs)
 
 oai_primary  = _make_client(OPENAI_API_KEY, OPENAI_BASE_URL or None)
-oai_ollama   = _make_client("ollama",        OLLAMA_BASE_URL)
+oai_ollama   = _make_client("ollama", OLLAMA_CONTAINER_URL)   # default; overridden on startup
 
 cache = SemanticCache(QDRANT_URL)
+
+
+async def _detect_ollama() -> tuple[str, str]:
+    """
+    Ping host Ollama first; if reachable use it with the best/host model.
+    Otherwise fall back to the containerised Ollama with the small model.
+    Returns (base_url, model).
+    """
+    host_base = OLLAMA_HOST_URL.rstrip("/v1").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{host_base}/api/tags")
+            if r.status_code == 200:
+                logger.info(
+                    "Native Ollama detected – using host instance with model '%s'",
+                    OLLAMA_HOST_MODEL,
+                )
+                return OLLAMA_HOST_URL, OLLAMA_HOST_MODEL
+    except Exception:
+        pass
+    logger.info(
+        "Host Ollama not reachable – using container instance with model '%s'",
+        OLLAMA_CONTAINER_MODEL,
+    )
+    return OLLAMA_CONTAINER_URL, OLLAMA_CONTAINER_MODEL
 
 # ── In-memory sessions ────────────────────────────────────────────────────────
 
@@ -338,6 +368,13 @@ app = FastAPI(title="Payment Analysis UI")
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+@app.on_event("startup")
+async def startup():
+    global oai_ollama, OLLAMA_MODEL
+    ollama_url, OLLAMA_MODEL = await _detect_ollama()
+    oai_ollama = _make_client("ollama", ollama_url)
+
+
 @app.get("/")
 async def index():
     return FileResponse(STATIC_DIR / "index.html")
@@ -366,7 +403,7 @@ async def chat(request: Request):
 async def get_providers():
     return {
         "primary": {"base_url": OPENAI_BASE_URL or "https://api.openai.com", "model": PRIMARY_MODEL},
-        "ollama":  {"base_url": OLLAMA_BASE_URL, "model": OLLAMA_MODEL},
+        "ollama":  {"base_url": oai_ollama.base_url, "model": OLLAMA_MODEL},
     }
 
 
