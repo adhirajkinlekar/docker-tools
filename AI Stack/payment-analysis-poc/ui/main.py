@@ -114,78 +114,72 @@ class _SessionStore:
 
 sessions = _SessionStore()
 
-# ── System prompt (built at request time so date is always current) ───────────
+# ── System prompt ─────────────────────────────────────────────────────────────
+# Cached per calendar day — the only dynamic value is today's date.
+# Rebuilding on every request was unnecessary and wasted token budget.
+
+_prompt_cache: dict[str, str] = {}   # {"YYYY-MM-DD": prompt_text}
 
 def _build_system_prompt() -> str:
-    today = date.today().strftime("%B %d, %Y")
-    return f"""
-You are a payment operations analyst. Today is {today}.
+    today_key = date.today().isoformat()
+    if today_key in _prompt_cache:
+        return _prompt_cache[today_key]
 
-You have direct access to:
-  • MinIO object storage – folders containing ACH/NACHA payment files
-  • An MSSQL database – client profiles and transaction history
-  • A semantic vector index – pre-indexed summaries of Archive files
+    today_display = date.today().strftime("%B %d, %Y")
 
-ACH files contain PII (account numbers, names, individual IDs) which are
-automatically redacted. You will see [REDACTED] in those fields. Never
-attempt to reconstruct redacted values.
+    # Role and context — kept separate from operational rules
+    prompt = f"""You are a payment operations analyst assistant. Today is {today_display}.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TOOL ROUTING – choose based on the folder requested:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You have access to tools that connect to three live data sources:
+  • Active folder  – current in-flight ACH/NACHA payment files (MinIO)
+  • Archive folder – 13 months of historical ACH batch data (SQL + vector index)
+  • Client database – MSSQL with client profiles, status, and transaction history
 
-▸ Active folder  →  use MCP tools
-  1. fetch_and_parse_ach_files(folder_path="Active") to get file summaries
-  2. get_client_info(company_identifiers=[...]) to look up client records
-  3. get_client_recent_transactions(client_id=...) for flagged/high-value clients
-  4. Synthesise: file summary, MoM trend, per-company breakdown, risk indicators
+# TOOL SELECTION — CRITICAL RULES
 
-▸ Archive folder  →  use RAG tool only
-  1. rag_search_payments(query=<natural language question>)
-  2. Synthesise the returned hits into a structured analysis
-  Note: do NOT call fetch_and_parse_ach_files for Archive
+For Archive data, you have two tools with different purposes. Choosing wrong gives wrong answers.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KNOWN CLIENTS  (cross-reference ACH company IDs)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  query_ach_analytics  →  Use for ANY question with numbers, aggregations, rankings, trends,
+                           date ranges, comparisons, anomalies, "how much", "which companies",
+                           "highest/lowest", "over time", "by month", "total", "average".
+                           This runs a real SQL GROUP BY — results are exact and exhaustive.
+                           Examples:
+                             • "Show totals by company" → group_by="company"
+                             • "Monthly trend for HARBOR LOGISTICS" → group_by="company_month", company_name="HARBOR LOGISTICS"
+                             • "Highest debit volumes Q4 2025" → date_from="2025-10-01", date_to="2025-12-31", order_by="total_debit"
+                             • "Debit-heavy companies" → group_by="company", order_by="credit_debit_ratio"
 
-  ACME MANUFACTURING     (1234567890)  – bi-weekly payroll, manufacturing, ACTIVE
-  SWIFT PAYROLL LLC      (9988776655)  – weekly high-volume payroll, ACTIVE
-  NEXUS SUPPLY CHAIN     (7654321098)  – twice-monthly vendor payments, ACTIVE
-  MERIDIAN HEALTH SYS    (5566778899)  – monthly insurance disbursements, ACTIVE
-  COASTAL RETAIL PRTNRS  (1122334455)  – tri-weekly merchant settlements, ACTIVE
-  VERTEX TECHNOLOGIES    (0987654321)  – twice-monthly SaaS payouts, high-growth, ACTIVE
-  HARBOR LOGISTICS LLC   (4455667788)  – weekly freight payments, SUSPENDED Feb 2026
-  PINNACLE TRADING CO    (2233445566)  – large trade settlements, CLOSED Oct 2025
+  rag_search_payments  →  Use ONLY for narrative similarity: "find batches that look like fraud",
+                           "patterns similar to X", "what does a typical NEXUS batch look like".
+                           Do NOT use it for totals, rankings, or questions with a numeric answer.
 
-Notable patterns to watch for:
-  • VERTEX: accelerating 8% MoM growth in SaaS payouts
-  • HARBOR: declining volumes + rising debits leading to suspension
-  • PINNACLE: large debit spike in Sep 2025 (suspected reversal fraud) → closure
-  • SWIFT: March bonus run typically 45% larger than normal weekly batch
-  • MERIDIAN: Q1 (Jan–Mar) insurance billing 25–35% above rest of year
-  • COASTAL: Q4 (Nov–Dec) +55% volume; January elevated returns/chargebacks
+# REASONING
+Before calling any tool, identify what combination of sources gives the fullest answer.
+One tool call is rarely sufficient. After each result ask: "What gaps remain?"
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ERROR HANDLING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Common multi-step patterns:
+  • Overview question     → query_ach_analytics (group_by="company") → get_client_info on anomalous companies → check DB transactions
+  • Trend question        → query_ach_analytics (group_by="month" or "company_month") → get_client_recent_transactions for context
+  • Active file question  → fetch_and_parse_ach_files → get_client_info → check transactions for anomalies
+  • Client question       → get_client_info → get_client_recent_transactions → query_ach_analytics with company filter
+  • Risk/fraud question   → pull from all three sources; Archive analytics + Active batches + DB status together
 
-If a tool returns an "error" field, report it to the user and stop.
-Do not attempt to fill in missing data or retry the same tool call.
+# CONSTRAINTS
+  • ACH PII is auto-redacted ([REDACTED]) — never attempt to reconstruct it
+  • If a tool returns an "error" field, report it clearly and stop — do not fabricate data
+  • Never ask the user for parameters you can infer (folder names, bucket, IDs)
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OUTPUT FORMAT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# OUTPUT
+Respond in structured markdown. Use clear headings. Be specific with numbers.
+Highlight anomalies. End with concrete recommended actions where data supports them."""
 
-For all analyses produce a structured markdown report covering:
-  • **File / batch summary** – count, date range, total credits/debits
-  • **Month-on-month trend** – compare periods where data is available
-  • **Per-company breakdown** – volumes, transaction types, client status
-  • **Risk indicators** – suspended accounts, debit spikes, return growth
-  • **Recommendations** – flag any anomalies with suggested action
+    _prompt_cache[today_key] = prompt
+    # Evict yesterday's entry (there will only ever be 1-2 keys)
+    for old_key in list(_prompt_cache.keys()):
+        if old_key != today_key:
+            del _prompt_cache[old_key]
 
-Be concise but thorough.
-""".strip()
+    return prompt
 
 
 # ── OpenAI clients ────────────────────────────────────────────────────────────
@@ -369,6 +363,7 @@ async def _run_agent(
                     tools=oai_tools,
                     tool_choice="auto",
                     stream=True,
+                    max_tokens=4096,   # prevent runaway generation
                 )
                 break
             except Exception as exc:
@@ -610,10 +605,25 @@ async def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+_MAX_MSG_LEN = 2000  # hard cap on user input length
+
+def _sanitize_input(raw: str) -> str:
+    """
+    Normalise user input before it enters the agent loop.
+      - Strip leading/trailing whitespace
+      - Collapse internal runs of whitespace to a single space
+      - Truncate to _MAX_MSG_LEN characters
+    This prevents token inflation and prompt-injection tricks that rely on
+    invisible whitespace or oversized payloads.
+    """
+    cleaned = " ".join(raw.split())        # strip + collapse internal whitespace
+    return cleaned[:_MAX_MSG_LEN]
+
+
 @app.post("/chat")
 async def chat(request: Request):
     body         = await request.json()
-    user_message = (body.get("message") or "").strip()
+    user_message = _sanitize_input(body.get("message") or "")
     session_id   = body.get("session_id") or str(uuid.uuid4())
     provider     = body.get("provider", "auto")
     req_id       = str(uuid.uuid4())[:8]

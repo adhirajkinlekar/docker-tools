@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# freetds-dev + gcc are required to build pymssql from source
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        freetds-dev freetds-bin gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

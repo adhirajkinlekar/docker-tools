@@ -10,15 +10,8 @@ Responsibilities:
   2. POST /webhook  – receives MinIO S3 event notifications; indexes new files
      as a background task so the webhook returns immediately.
   3. GET  /search   – semantic search over the ACH index (called by MCP server)
-  4. GET  /health   – liveness probe
-
-Improvements over v1:
-  • Webhook handler is non-blocking – indexing runs as a BackgroundTask
-  • Startup reindex runs as asyncio background task (app accepts requests immediately)
-  • Batch _already_indexed check: one Qdrant retrieve call per file instead of per batch
-  • Embedding wrapped in run_in_executor (CPU-bound ONNX, keeps event loop free)
-  • Secrets required at startup (no silent defaults)
-  • score_threshold param forwarded from MCP server to /search endpoint
+  4. GET  /aggregate – full company-level rollup without semantic filtering
+  5. GET  /health   – liveness probe
 """
 
 import asyncio
@@ -32,12 +25,19 @@ from contextlib import asynccontextmanager
 from urllib.parse import unquote_plus
 
 import boto3
+import pymssql
 from botocore.client import Config
 from fastembed import TextEmbedding
 from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    HnswConfigDiff,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,11 +51,21 @@ MINIO_ENDPOINT   = os.environ.get("MINIO_ENDPOINT",   "http://minio:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
 QDRANT_URL       = os.environ.get("QDRANT_URL",       "http://qdrant:6333")
+MSSQL_SERVER     = os.environ.get("MSSQL_SERVER",     "mssql")
+MSSQL_DATABASE   = os.environ.get("MSSQL_DATABASE",   "PaymentDB")
+MSSQL_USER       = os.environ.get("MSSQL_USER",       "sa")
+MSSQL_PASSWORD   = os.environ.get("MSSQL_PASSWORD",   "")
 BUCKET           = "payments"
 RAG_FOLDER       = "Archive"
 COLLECTION       = "ach_index"
 VECTOR_SIZE      = 384
 WEBHOOK_ARN      = "arn:minio:sqs::1:webhook"
+
+# HNSW index parameters — explicit for deterministic search quality.
+# m=16: connections per node (higher = better recall, more memory)
+# ef_construct=128: build-time search width (higher = better index quality)
+HNSW_M            = 16
+HNSW_EF_CONSTRUCT = 128
 
 # ── Globals (initialised in lifespan) ─────────────────────────────────────────
 
@@ -65,7 +75,8 @@ s3:       "boto3.client"   # type: ignore[type-arg]
 
 # ── Minimal ACH batch-level parser ────────────────────────────────────────────
 
-DEBIT_CODES = {"27", "28", "29", "37", "38", "55"}
+DEBIT_CODES  = {"27", "28", "29", "37", "38", "55"}
+CREDIT_CODES = {"22", "23", "24", "32", "33", "52"}
 
 
 def _fmt_date(s: str) -> str:
@@ -128,14 +139,38 @@ def _parse_ach_batches(content: str) -> list[dict]:
 
 
 def _make_summary(filename: str, batch: dict) -> str:
+    """
+    Build the text string that gets embedded into a vector.
+
+    Richer text → richer vector. Include:
+    - Company identity (name + ID)
+    - Financial signals (credit/debit amounts, ratio, direction)
+    - Temporal context (date)
+    - Transaction class and description
+    """
+    cr = batch["total_credit"]
+    db = batch["total_debit"]
+
+    # Credit/debit ratio as a semantic signal
+    if db > 0:
+        ratio_str = f"credit-to-debit ratio {cr / db:.2f}"
+    elif cr > 0:
+        ratio_str = "credit-only batch"
+    else:
+        ratio_str = "debit-only batch"
+
+    # Dominant direction
+    direction = "credit" if cr >= db else "debit"
+
     return (
         f"Company: {batch['company_name']} (ID: {batch['company_id']}). "
         f"Folder: {RAG_FOLDER}. File: {filename}. "
         f"Date: {batch['effective_date']}. "
+        f"Entry class: {batch['entry_class']}. "
+        f"Description: {batch['entry_description']}. "
         f"Entries: {batch['entry_count']}. "
-        f"Credits: ${batch['total_credit']:,.2f}. "
-        f"Debits: ${batch['total_debit']:,.2f}. "
-        f"Description: {batch['entry_description']}."
+        f"Credits: ${cr:,.2f}. Debits: ${db:,.2f}. "
+        f"Dominant direction: {direction}. {ratio_str}."
     )
 
 
@@ -146,9 +181,31 @@ def _ensure_collection() -> None:
     if COLLECTION not in existing:
         qdrant.create_collection(
             collection_name=COLLECTION,
-            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+            vectors_config=VectorParams(
+                size=VECTOR_SIZE,
+                distance=Distance.COSINE,
+                hnsw_config=HnswConfigDiff(m=HNSW_M, ef_construct=HNSW_EF_CONSTRUCT),
+            ),
         )
-        logger.info("Created Qdrant collection '%s'", COLLECTION)
+        logger.info("Created Qdrant collection '%s' (HNSW m=%d ef=%d)",
+                    COLLECTION, HNSW_M, HNSW_EF_CONSTRUCT)
+
+    # Payload indexes for O(log n) filtered queries instead of full scans
+    _ensure_payload_index("company_name",   PayloadSchemaType.KEYWORD)
+    _ensure_payload_index("effective_date", PayloadSchemaType.KEYWORD)
+    _ensure_payload_index("entry_class",    PayloadSchemaType.KEYWORD)
+
+
+def _ensure_payload_index(field: str, schema_type: PayloadSchemaType) -> None:
+    try:
+        qdrant.create_payload_index(
+            collection_name=COLLECTION,
+            field_name=field,
+            field_schema=schema_type,
+        )
+        logger.info("Payload index ensured: %s (%s)", field, schema_type)
+    except Exception:
+        pass  # already exists — not an error
 
 
 def _point_id(key: str, batch_idx: int) -> str:
@@ -157,10 +214,7 @@ def _point_id(key: str, batch_idx: int) -> str:
 
 
 def _get_already_indexed(keys_and_indices: list[tuple[str, int]]) -> set[str]:
-    """
-    Single bulk Qdrant retrieve to check which point IDs already exist.
-    Replaces the previous per-batch retrieve loop (N round-trips → 1).
-    """
+    """Single bulk Qdrant retrieve to check which point IDs already exist."""
     if not keys_and_indices:
         return set()
     all_ids = [_point_id(k, i) for k, i in keys_and_indices]
@@ -173,13 +227,79 @@ def _get_already_indexed(keys_and_indices: list[tuple[str, int]]) -> set[str]:
     return {str(r.id) for r in results}
 
 
+# ── SQL dual-write ─────────────────────────────────────────────────────────────
+
+def _sql_conn():
+    """Open a fresh pymssql connection (short-lived, closed by caller)."""
+    return pymssql.connect(
+        server=MSSQL_SERVER,
+        user=MSSQL_USER,
+        password=MSSQL_PASSWORD,
+        database=MSSQL_DATABASE,
+        login_timeout=10,
+        as_dict=False,
+    )
+
+
+def _write_batches_to_sql(records: list[dict]) -> None:
+    """
+    Idempotent MERGE of ACH batch records into the ach_batches table.
+
+    Each record must have:
+        qdrant_point_id, filename, folder, company_name, company_id,
+        entry_class, entry_description, effective_date (str YYYY-MM-DD or "unknown"),
+        total_credit, total_debit, entry_count
+
+    Uses MERGE so re-indexing the same file is a no-op for existing rows.
+    """
+    if not records:
+        return
+
+    merge_sql = """
+        MERGE ach_batches AS tgt
+        USING (SELECT %s AS qdrant_point_id) AS src
+        ON tgt.qdrant_point_id = src.qdrant_point_id
+        WHEN NOT MATCHED THEN INSERT (
+            qdrant_point_id, filename, folder, company_name, company_id,
+            entry_class, entry_description, effective_date,
+            total_credit, total_debit, entry_count
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);
+    """
+
+    try:
+        with _sql_conn() as conn:
+            cur = conn.cursor()
+            for r in records:
+                eff = r["effective_date"]
+                # Convert "unknown" / malformed dates to NULL
+                eff_val = eff if (eff and eff != "unknown" and len(eff) == 10) else None
+                cur.execute(merge_sql, (
+                    r["qdrant_point_id"],
+                    r["qdrant_point_id"],
+                    r["filename"],
+                    r["folder"],
+                    r["company_name"],
+                    r["company_id"],
+                    r["entry_class"],
+                    r["entry_description"],
+                    eff_val,
+                    r["total_credit"],
+                    r["total_debit"],
+                    r["entry_count"],
+                ))
+            conn.commit()
+        logger.info("SQL: upserted %d batch record(s) into ach_batches", len(records))
+    except Exception as exc:
+        # SQL failure must never block Qdrant indexing — log and continue.
+        logger.error("SQL dual-write failed (%s) — Qdrant index is unaffected", exc)
+
+
 # ── Core indexing logic ────────────────────────────────────────────────────────
 
 def _index_file(key: str) -> None:
     """
-    Fetch one ACH file from MinIO, parse it, embed each batch, upsert to Qdrant.
-    This is a synchronous function; callers should run it in an executor or
-    as a FastAPI BackgroundTask (which uses a thread pool automatically).
+    Fetch one ACH file from MinIO, parse it, embed all new batches in a
+    single batched call, then upsert to Qdrant.
     """
     filename = key.split("/")[-1]
     logger.info("Indexing %s/%s …", BUCKET, key)
@@ -196,44 +316,67 @@ def _index_file(key: str) -> None:
         logger.warning("No ACH batches found in %s", filename)
         return
 
-    # Single bulk check for already-indexed batches
     keys_and_indices    = [(key, i) for i in range(len(batches))]
     already_indexed_ids = _get_already_indexed(keys_and_indices)
 
-    points: list[PointStruct] = []
+    # Collect all new batches that need embedding
+    new_batches: list[tuple[int, dict, str]] = []  # (idx, batch, point_id)
     for i, batch in enumerate(batches):
         pid = _point_id(key, i)
-        if pid in already_indexed_ids:
-            logger.debug("Already indexed: %s batch %d (skipping)", filename, i)
-            continue
+        if pid not in already_indexed_ids:
+            new_batches.append((i, batch, pid))
 
-        summary = _make_summary(filename, batch)
-        # Embedding is CPU-bound (ONNX) – acceptable here since we run in thread pool
-        vector  = list(embedder.embed([summary]))[0].tolist()
+    if not new_batches:
+        logger.info("All batches in %s already indexed", filename)
+        return
 
+    # Batch all summaries into a single embed() call — far faster than one-by-one
+    summaries = [_make_summary(filename, b) for _, b, _ in new_batches]
+    vectors   = list(embedder.embed(summaries))   # returns a generator; materialize
+
+    points: list[PointStruct] = []
+    for (i, batch, pid), vector in zip(new_batches, vectors):
         points.append(PointStruct(
             id=pid,
-            vector=vector,
+            vector=vector.tolist(),
             payload={
                 "filename":             filename,
                 "folder":               RAG_FOLDER,
                 "company_name":         batch["company_name"],
                 "company_id":           batch["company_id"],
+                "entry_class":          batch["entry_class"],
                 "effective_date":       batch["effective_date"],
                 "total_credit_dollars": batch["total_credit"],
                 "total_debit_dollars":  batch["total_debit"],
                 "entry_count":          batch["entry_count"],
                 "entry_description":    batch["entry_description"],
-                "summary":              summary,
+                "summary":              summaries[new_batches.index((i, batch, pid))],
                 "indexed_at":           time.time(),
             },
         ))
 
-    if points:
-        qdrant.upsert(collection_name=COLLECTION, points=points)
-        logger.info("Indexed %d batch(es) from %s", len(points), filename)
-    else:
-        logger.info("All batches in %s already indexed", filename)
+    qdrant.upsert(collection_name=COLLECTION, points=points)
+    logger.info("Indexed %d new batch(es) from %s into Qdrant", len(points), filename)
+
+    # Dual-write structured data to MSSQL for SQL-based analytics.
+    # Qdrant vectors are for semantic search; SQL is for aggregations/trends.
+    sql_records = [
+        {
+            "qdrant_point_id":  pid,
+            "filename":         filename,
+            "folder":           RAG_FOLDER,
+            "company_name":     batch["company_name"],
+            "company_id":       batch["company_id"],
+            "entry_class":      batch["entry_class"],
+            "entry_description": batch["entry_description"],
+            "effective_date":   batch["effective_date"],
+            "total_credit":     batch["total_credit"],
+            "total_debit":      batch["total_debit"],
+            "entry_count":      batch["entry_count"],
+        }
+        for (_, batch, pid) in new_batches
+    ]
+    _write_batches_to_sql(sql_records)
 
 
 # ── MinIO webhook notification setup ─────────────────────────────────────────
@@ -266,6 +409,59 @@ def _setup_minio_notification() -> None:
 
 
 # ── Startup reindex ────────────────────────────────────────────────────────────
+
+def _sync_qdrant_to_sql() -> None:
+    """
+    Backfill SQL from existing Qdrant payloads.
+
+    Runs once at startup after _reindex_existing.  Scrolls every point in the
+    Qdrant collection and writes any that aren't already in ach_batches.
+    This is a no-op for healthy restarts (MERGE ignores duplicates) and a
+    full population on first run after this feature was introduced.
+    """
+    logger.info("SQL backfill: scanning Qdrant collection '%s' …", COLLECTION)
+    records: list[dict] = []
+    offset = None
+
+    try:
+        while True:
+            result = qdrant.scroll(
+                collection_name=COLLECTION,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points, next_offset = result
+            for p in points:
+                pl = p.payload or {}
+                records.append({
+                    "qdrant_point_id":  str(p.id),
+                    "filename":         pl.get("filename", ""),
+                    "folder":           pl.get("folder", RAG_FOLDER),
+                    "company_name":     pl.get("company_name", ""),
+                    "company_id":       pl.get("company_id", ""),
+                    "entry_class":      pl.get("entry_class", ""),
+                    "entry_description": pl.get("entry_description", ""),
+                    "effective_date":   pl.get("effective_date", ""),
+                    "total_credit":     float(pl.get("total_credit_dollars", 0) or 0),
+                    "total_debit":      float(pl.get("total_debit_dollars",  0) or 0),
+                    "entry_count":      int(pl.get("entry_count",  0) or 0),
+                })
+            if next_offset is None:
+                break
+            offset = next_offset
+    except Exception as exc:
+        logger.error("SQL backfill: Qdrant scroll failed: %s", exc)
+        return
+
+    if not records:
+        logger.info("SQL backfill: nothing in Qdrant yet")
+        return
+
+    _write_batches_to_sql(records)
+    logger.info("SQL backfill complete — synced %d Qdrant point(s) to ach_batches", len(records))
+
 
 def _reindex_existing() -> None:
     """Index any files already in Archive that aren't in Qdrant yet."""
@@ -301,7 +497,6 @@ async def lifespan(app: FastAPI):
 
     logger.info("Indexer starting up …")
 
-    # Initialise clients synchronously (fast)
     qdrant = QdrantClient(url=QDRANT_URL)
     s3     = boto3.client(
         "s3",
@@ -312,8 +507,7 @@ async def lifespan(app: FastAPI):
         region_name="us-east-1",
     )
 
-    # Load embedding model in executor (CPU-bound, ~130 MB ONNX)
-    loop     = asyncio.get_event_loop()
+    loop     = asyncio.get_running_loop()   # get_event_loop() deprecated in 3.10+
     embedder = await loop.run_in_executor(
         None, lambda: TextEmbedding("BAAI/bge-small-en-v1.5")
     )
@@ -321,10 +515,13 @@ async def lifespan(app: FastAPI):
     _ensure_collection()
     _setup_minio_notification()
 
-    # Reindex existing files in the background so startup is non-blocking
-    asyncio.ensure_future(loop.run_in_executor(None, _reindex_existing))
+    def _startup_sync():
+        _reindex_existing()     # embed any new files into Qdrant
+        _sync_qdrant_to_sql()   # backfill SQL from all Qdrant payloads
 
-    logger.info("Indexer ready – accepting requests (reindex running in background)")
+    asyncio.ensure_future(loop.run_in_executor(None, _startup_sync))
+
+    logger.info("Indexer ready – accepting requests (reindex + SQL sync running in background)")
     yield
     logger.info("Indexer shutting down")
 
@@ -336,9 +533,7 @@ app = FastAPI(title="ACH RAG Indexer", lifespan=lifespan)
 
 @app.post("/webhook")
 async def minio_webhook(request: Request, background_tasks: BackgroundTasks):
-    """
-    MinIO S3 event webhook – returns immediately, indexes in background.
-    """
+    """MinIO S3 event webhook – returns immediately, indexes in background."""
     try:
         body = await request.json()
     except Exception:
@@ -359,13 +554,13 @@ async def minio_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/search")
 async def search(
-    q:         str   = Query(..., description="Natural language query"),
-    limit:     int   = Query(10, ge=1, le=50),
-    threshold: float = Query(0.55, ge=0.0, le=1.0, description="Minimum relevance score"),
+    q:         str   = Query(..., min_length=1, max_length=500, description="Natural language query"),
+    limit:     int   = Query(20, ge=1, le=50),
+    threshold: float = Query(0.55, ge=0.0, le=1.0),
 ):
     """Semantic search over the ACH index."""
     try:
-        loop    = asyncio.get_event_loop()
+        loop    = asyncio.get_running_loop()
         vector  = await loop.run_in_executor(
             None, lambda: list(embedder.embed([q]))[0].tolist()
         )
@@ -383,6 +578,7 @@ async def search(
                 "folder":               r.payload.get("folder"),
                 "company_name":         r.payload.get("company_name"),
                 "company_id":           r.payload.get("company_id"),
+                "entry_class":          r.payload.get("entry_class"),
                 "effective_date":       r.payload.get("effective_date"),
                 "total_credit_dollars": r.payload.get("total_credit_dollars"),
                 "total_debit_dollars":  r.payload.get("total_debit_dollars"),
@@ -392,9 +588,95 @@ async def search(
             for r in results
         ]
         return {"query": q, "results": hits, "count": len(hits)}
-    except Exception as exc:
+    except Exception:
         logger.exception("Search failed")
         return JSONResponse({"error": "Search failed. Please try again."}, status_code=500)
+
+
+@app.get("/aggregate")
+async def aggregate():
+    """
+    Full company-level rollup by scrolling ALL indexed Archive documents.
+    No semantic filtering — every document is included.
+    """
+    try:
+        companies: dict[str, dict] = {}
+        offset = None
+
+        while True:
+            result = qdrant.scroll(
+                collection_name=COLLECTION,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points, next_offset = result
+
+            for p in points:
+                pl   = p.payload or {}
+                name = pl.get("company_name", "UNKNOWN")
+                cid  = pl.get("company_id",   "")
+                dt   = pl.get("effective_date", "")
+                cr   = float(pl.get("total_credit_dollars", 0) or 0)
+                db   = float(pl.get("total_debit_dollars",  0) or 0)
+                ec   = int(pl.get("entry_count", 0) or 0)
+                desc = pl.get("entry_description", "")
+                ecls = pl.get("entry_class", "")
+
+                if name not in companies:
+                    companies[name] = {
+                        "company_name":         name,
+                        "company_id":           cid,
+                        "file_count":           0,
+                        "total_credit_dollars": 0.0,
+                        "total_debit_dollars":  0.0,
+                        "total_entries":        0,
+                        "earliest_date":        dt,
+                        "latest_date":          dt,
+                        "descriptions":         set(),
+                        "entry_classes":        set(),
+                    }
+
+                c = companies[name]
+                c["file_count"]           += 1
+                c["total_credit_dollars"]  = round(c["total_credit_dollars"] + cr, 2)
+                c["total_debit_dollars"]   = round(c["total_debit_dollars"]  + db, 2)
+                c["total_entries"]        += ec
+                if desc: c["descriptions"].add(desc)
+                if ecls: c["entry_classes"].add(ecls)
+                if dt and dt < c["earliest_date"]: c["earliest_date"] = dt
+                if dt and dt > c["latest_date"]:   c["latest_date"]   = dt
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        rows = []
+        for c in companies.values():
+            total = c["total_credit_dollars"] + c["total_debit_dollars"]
+            ratio = round(c["total_credit_dollars"] / c["total_debit_dollars"], 2) \
+                    if c["total_debit_dollars"] > 0 else None
+            rows.append({
+                "company_name":         c["company_name"],
+                "company_id":           c["company_id"],
+                "file_count":           c["file_count"],
+                "total_credit_dollars": c["total_credit_dollars"],
+                "total_debit_dollars":  c["total_debit_dollars"],
+                "total_volume_dollars": round(total, 2),
+                "credit_debit_ratio":   ratio,
+                "total_entries":        c["total_entries"],
+                "date_range":           f"{c['earliest_date']} → {c['latest_date']}",
+                "entry_descriptions":   sorted(c["descriptions"]),
+                "entry_classes":        sorted(c["entry_classes"]),
+            })
+
+        rows.sort(key=lambda r: r["total_credit_dollars"], reverse=True)
+        return {"companies": rows, "total_companies": len(rows)}
+
+    except Exception:
+        logger.exception("Aggregate failed")
+        return JSONResponse({"error": "Aggregate failed."}, status_code=500)
 
 
 @app.get("/health")

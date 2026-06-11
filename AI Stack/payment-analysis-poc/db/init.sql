@@ -27,6 +27,37 @@ GO
 -- Tables
 -- ─────────────────────────────────────────────────────────────
 
+-- ach_batches: structured ACH batch data written by the indexer on every file
+-- indexed from the Archive folder.  This is the authoritative store for all
+-- analytical queries (aggregations, trends, rankings).  Qdrant holds the
+-- vectors for semantic search; this table holds the numbers for SQL analytics.
+IF OBJECT_ID('ach_batches', 'U') IS NULL
+BEGIN
+    CREATE TABLE ach_batches (
+        batch_id          INT IDENTITY(1,1) PRIMARY KEY,
+        -- qdrant_point_id is the MD5-derived UUID computed by the indexer.
+        -- It is the cross-system dedup key — the same value is used as the
+        -- Qdrant point ID, so MERGE ON this column is fully idempotent.
+        qdrant_point_id   VARCHAR(36)    NOT NULL,
+        filename          VARCHAR(200)   NOT NULL,
+        folder            VARCHAR(50)    NOT NULL DEFAULT 'Archive',
+        company_name      VARCHAR(100),
+        company_id        VARCHAR(10),
+        entry_class       VARCHAR(3),
+        entry_description VARCHAR(50),
+        effective_date    DATE,
+        total_credit      DECIMAL(15,2)  NOT NULL DEFAULT 0,
+        total_debit       DECIMAL(15,2)  NOT NULL DEFAULT 0,
+        entry_count       INT            NOT NULL DEFAULT 0,
+        indexed_at        DATETIME       NOT NULL DEFAULT GETDATE(),
+        CONSTRAINT uq_ach_batch UNIQUE (qdrant_point_id)
+    );
+    CREATE INDEX ix_ach_batches_company ON ach_batches (company_name);
+    CREATE INDEX ix_ach_batches_date    ON ach_batches (effective_date);
+    CREATE INDEX ix_ach_batches_class   ON ach_batches (entry_class);
+END
+GO
+
 IF OBJECT_ID('client_transactions', 'U') IS NULL
 BEGIN
     CREATE TABLE client_transactions (

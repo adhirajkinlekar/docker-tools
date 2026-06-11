@@ -3,11 +3,6 @@ Semantic response cache backed by Qdrant (async).
 
 Uses fastembed (local ONNX model – no external API required) to embed queries,
 then stores/retrieves agent responses by cosine similarity.
-
-Improvements over v1:
-  • AsyncQdrantClient – non-blocking, won't stall the uvicorn event loop
-  • Embedding runs in a thread executor (CPU-bound, keeps loop free)
-  • Lazy collection init (first use, not import time)
 """
 
 import asyncio
@@ -22,6 +17,8 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    HnswConfigDiff,
+    PayloadSchemaType,
     Range,
     PointStruct,
     VectorParams,
@@ -45,12 +42,10 @@ class SemanticCache:
     # ── Lazy init ─────────────────────────────────────────────────────────────
 
     async def _ensure_ready(self) -> None:
-        """Initialise client and embedder on first use (not at import time)."""
         if self._ready:
             return
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()   # get_event_loop() deprecated in 3.10+
 
-        # Load embedding model in executor (130 MB ONNX – CPU-bound)
         if self._embedder is None:
             self._embedder = await loop.run_in_executor(
                 None, lambda: TextEmbedding("BAAI/bge-small-en-v1.5")
@@ -70,14 +65,30 @@ class SemanticCache:
         if COLLECTION not in existing:
             await self._client.create_collection(
                 collection_name=COLLECTION,
-                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+                vectors_config=VectorParams(
+                    size=VECTOR_SIZE,
+                    distance=Distance.COSINE,
+                    # Explicit HNSW params for deterministic search quality
+                    hnsw_config=HnswConfigDiff(m=16, ef_construct=128),
+                ),
             )
             logger.info("Created Qdrant collection '%s'", COLLECTION)
+
+        # Payload index on cached_at enables O(log n) TTL filtering
+        # instead of a full collection scan on every cache lookup
+        try:
+            await self._client.create_payload_index(
+                collection_name=COLLECTION,
+                field_name="cached_at",
+                field_schema=PayloadSchemaType.FLOAT,
+            )
+        except Exception:
+            pass  # already exists
 
     # ── Embedding ─────────────────────────────────────────────────────────────
 
     async def _embed(self, text: str) -> list[float]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, lambda: list(self._embedder.embed([text]))[0].tolist()
         )
@@ -129,7 +140,6 @@ class SemanticCache:
                         id=str(uuid.uuid4()),
                         vector=vector,
                         payload={
-                            # Store only a hash of the query (not raw text) for privacy
                             "query":     query[:80] + ("…" if len(query) > 80 else ""),
                             "response":  response,
                             "cached_at": time.time(),
@@ -153,7 +163,7 @@ class SemanticCache:
             collection_name=COLLECTION,
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
-        self._ready = False  # force re-init on next use
+        self._ready = False
         logger.info("Cache cleared")
 
     def clear_expired(self) -> int:

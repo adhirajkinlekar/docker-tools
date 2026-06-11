@@ -163,6 +163,121 @@ class DbTools:
 
     # ------------------------------------------------------------------ #
 
+    def query_ach_analytics(
+        self,
+        group_by:     str        = "company",
+        company_name: str | None = None,
+        date_from:    str | None = None,
+        date_to:      str | None = None,
+        entry_class:  str | None = None,
+        order_by:     str        = "total_credit",
+        limit:        int        = 50,
+    ) -> str:
+        """
+        Aggregate SQL query over the ach_batches table.
+
+        group_by options   : "company" | "month" | "entry_class"
+                             | "company_month" | "company_entry_class"
+        order_by options   : "total_credit" | "total_debit"
+                             | "total_volume" | "credit_debit_ratio" | "date"
+        """
+        # ── Allowlists prevent SQL injection via dynamic GROUP BY / ORDER BY ──
+        VALID_GROUP = {
+            "company":             ["company_name", "company_id"],
+            "month":               ["YEAR(effective_date) AS yr", "MONTH(effective_date) AS mo"],
+            "entry_class":         ["entry_class"],
+            "company_month":       ["company_name", "company_id",
+                                    "YEAR(effective_date) AS yr", "MONTH(effective_date) AS mo"],
+            "company_entry_class": ["company_name", "company_id", "entry_class"],
+        }
+        VALID_ORDER = {
+            "total_credit":        "SUM(total_credit) DESC",
+            "total_debit":         "SUM(total_debit) DESC",
+            "total_volume":        "SUM(total_credit + total_debit) DESC",
+            "credit_debit_ratio":  "SUM(total_credit) / NULLIF(SUM(total_debit), 0) DESC",
+            "date":                "MIN(effective_date) ASC",
+        }
+
+        if group_by not in VALID_GROUP:
+            return json.dumps({"error": f"Invalid group_by '{group_by}'. "
+                                        f"Valid: {list(VALID_GROUP)}"})
+        if order_by not in VALID_ORDER:
+            return json.dumps({"error": f"Invalid order_by '{order_by}'. "
+                                        f"Valid: {list(VALID_ORDER)}"})
+
+        group_cols   = VALID_GROUP[group_by]
+        group_clause = ", ".join(
+            # Strip aliases for the GROUP BY clause
+            c.split(" AS ")[0] for c in group_cols
+        )
+        select_cols  = ",\n        ".join(group_cols)
+        order_clause = VALID_ORDER[order_by]
+        limit_val    = max(1, min(limit, 200))
+
+        # ── WHERE clause (parameterized) ──────────────────────────────────────
+        conditions: list[str] = ["effective_date IS NOT NULL"]
+        params:     list      = []
+
+        if company_name:
+            conditions.append("company_name LIKE %s")
+            params.append(f"%{company_name}%")
+        if date_from:
+            conditions.append("effective_date >= %s")
+            params.append(date_from)
+        if date_to:
+            conditions.append("effective_date <= %s")
+            params.append(date_to)
+        if entry_class:
+            conditions.append("entry_class = %s")
+            params.append(entry_class.upper())
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        query = f"""
+            SELECT TOP {limit_val}
+                {select_cols},
+                COUNT(DISTINCT filename)                                AS file_count,
+                COUNT(*)                                               AS batch_count,
+                SUM(total_credit)                                      AS total_credit,
+                SUM(total_debit)                                       AS total_debit,
+                ROUND(SUM(total_credit) + SUM(total_debit), 2)        AS total_volume,
+                ROUND(
+                    SUM(total_credit) / NULLIF(SUM(total_debit), 0)
+                , 4)                                                   AS credit_debit_ratio,
+                SUM(entry_count)                                       AS total_entries,
+                CONVERT(VARCHAR, MIN(effective_date), 23)              AS earliest_date,
+                CONVERT(VARCHAR, MAX(effective_date), 23)              AS latest_date
+            FROM ach_batches
+            {where}
+            GROUP BY {group_clause}
+            ORDER BY {order_clause}
+        """
+
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute(query, params)
+                cols = [d[0] for d in cur.description]
+                rows = [_serialize(dict(zip(cols, row))) for row in cur.fetchall()]
+
+            return json.dumps({
+                "group_by":    group_by,
+                "order_by":    order_by,
+                "filters": {
+                    "company_name": company_name,
+                    "date_from":    date_from,
+                    "date_to":      date_to,
+                    "entry_class":  entry_class,
+                },
+                "row_count": len(rows),
+                "rows":      rows,
+            }, indent=2)
+        except Exception:
+            logger.exception("query_ach_analytics error")
+            return json.dumps({"error": "Analytics query failed. Please try again."})
+
+    # ------------------------------------------------------------------ #
+
     def get_all_clients(self) -> str:
         """Return a summary list of clients (no transaction detail)."""
         query = """
