@@ -201,19 +201,20 @@ def query_ach_analytics(
         Field(default=None, description='Filter by ACH entry class code, e.g. "PPD", "CCD", "CTX".'),
     ] = None,
     order_by: Annotated[
-        str,
+        str | None,
         Field(
-            default="total_credit",
+            default=None,
             description=(
                 'Column to sort by (descending). '
-                '"total_credit" | "total_debit" | "total_volume" | "credit_debit_ratio" | "date"'
+                '"total_credit" | "total_debit" | "total_volume" | "credit_debit_ratio" | "date". '
+                'Omit or pass null to use the default (total_credit).'
             ),
         ),
-    ] = "total_credit",
+    ] = None,
     limit: Annotated[
-        int,
-        Field(default=50, ge=1, le=200, description="Maximum rows to return."),
-    ] = 50,
+        int | None,
+        Field(default=None, description="Maximum rows to return (1–200). Omit or pass null for default (50)."),
+    ] = None,
 ) -> str:
     """
     SQL-powered analytics over all historical ACH batch data in the Archive folder.
@@ -244,6 +245,11 @@ def query_ach_analytics(
       - Call fetch_and_parse_ach_files() to check whether flagged companies
         are still active today
     """
+    # Coerce nulls — Ollama passes null for optional params it doesn't want to set
+    group_by = group_by or "company"
+    order_by = order_by or "total_credit"
+    limit    = limit    or 50
+
     logger.info(
         "query_ach_analytics(group_by=%s, company=%s, from=%s, to=%s, class=%s, order=%s, limit=%d)",
         group_by, company_name, date_from, date_to, entry_class, order_by, limit,

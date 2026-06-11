@@ -39,6 +39,7 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+      height: 100dvh; /* dynamic viewport height for mobile browsers */
       max-width: 860px;
       margin: 0 auto;
     }
@@ -48,15 +49,18 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 24px;
+      padding: 14px 24px;
       border-bottom: 1px solid var(--border);
       background: var(--surface);
+      flex-shrink: 0;
+      gap: 12px;
     }
 
     .header-title {
       display: flex;
       align-items: center;
       gap: 10px;
+      min-width: 0;
     }
 
     .header-icon {
@@ -65,12 +69,19 @@
       border-radius: var(--radius-sm);
       display: flex; align-items: center; justify-content: center;
       font-size: 16px;
+      flex-shrink: 0;
     }
 
-    header h1 { font-size: 15px; font-weight: 600; }
-    header p  { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+    .header-title-text { min-width: 0; }
+    .header-title-text h1 { font-size: 15px; font-weight: 600; white-space: nowrap; }
+    .header-title-text p  { font-size: 11px; color: var(--text-muted); margin-top: 1px; white-space: nowrap; }
 
-    .header-actions { display: flex; gap: 8px; }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
 
     .hdr-btn {
       background: none;
@@ -81,9 +92,9 @@
       border-radius: var(--radius-sm);
       cursor: pointer;
       transition: all .15s;
+      white-space: nowrap;
     }
     .hdr-btn:hover { border-color: var(--accent); color: var(--text); }
-    #clear-cache-btn:hover { border-color: #f0a030; color: #f0a030; }
 
     /* ── Messages ───────────────────────────────────────────────── */
     #messages {
@@ -94,6 +105,7 @@
       flex-direction: column;
       gap: 20px;
       scroll-behavior: smooth;
+      -webkit-overflow-scrolling: touch;
     }
 
     #messages::-webkit-scrollbar { width: 6px; }
@@ -109,7 +121,7 @@
       flex: 1;
       gap: 16px;
       text-align: center;
-      padding: 40px 0;
+      padding: 32px 0;
     }
 
     .welcome-icon {
@@ -121,7 +133,7 @@
     }
 
     .welcome h2 { font-size: 20px; font-weight: 600; }
-    .welcome p  { font-size: 14px; color: var(--text-muted); max-width: 420px; line-height: 1.6; }
+    .welcome p  { font-size: 14px; color: var(--text-muted); max-width: 440px; line-height: 1.6; padding: 0 8px; }
 
     .suggestions {
       display: flex;
@@ -129,6 +141,7 @@
       gap: 8px;
       justify-content: center;
       margin-top: 8px;
+      padding: 0 8px;
     }
 
     .suggestion-chip {
@@ -140,6 +153,7 @@
       cursor: pointer;
       transition: all .15s;
       color: var(--text);
+      text-align: left;
     }
     .suggestion-chip:hover {
       background: var(--surface);
@@ -176,6 +190,8 @@
       border-radius: var(--radius);
       font-size: 14px;
       line-height: 1.65;
+      min-width: 0;
+      word-break: break-word;
     }
 
     .msg-row.user  .bubble {
@@ -193,7 +209,7 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
-      padding-left: 44px; /* align with agent bubbles */
+      padding-left: 44px;
     }
 
     .tool-chip {
@@ -216,16 +232,11 @@
       border-top-color: #8ab4f8;
       border-radius: 50%;
       animation: spin .7s linear infinite;
+      flex-shrink: 0;
     }
 
-    .tool-chip.done .spinner {
-      display: none;
-    }
-    .tool-chip.done::before {
-      content: "✓";
-      color: #4ade80;
-      font-size: 11px;
-    }
+    .tool-chip.done .spinner { display: none; }
+    .tool-chip.done::before  { content: "✓"; color: #4ade80; font-size: 11px; }
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -255,7 +266,7 @@
       40%            { transform: translateY(-5px); opacity: 1; }
     }
 
-    /* ── Markdown styles inside bubbles ─────────────────────────── */
+    /* ── Markdown inside bubbles ────────────────────────────────── */
     .bubble h1, .bubble h2, .bubble h3 {
       margin: 12px 0 6px;
       font-size: 14px;
@@ -265,9 +276,7 @@
     .bubble p  { margin-bottom: 8px; }
     .bubble p:last-child { margin-bottom: 0; }
 
-    .bubble ul, .bubble ol {
-      margin: 6px 0 8px 18px;
-    }
+    .bubble ul, .bubble ol { margin: 6px 0 8px 18px; }
     .bubble li { margin-bottom: 4px; }
 
     .bubble code {
@@ -294,11 +303,15 @@
       border-collapse: collapse;
       font-size: 13px;
       margin: 8px 0;
+      display: block;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
     }
     .bubble th, .bubble td {
       border: 1px solid var(--border);
       padding: 6px 10px;
       text-align: left;
+      white-space: nowrap;
     }
     .bubble th { background: var(--surface2); }
 
@@ -399,9 +412,10 @@
 
     /* ── Input area ─────────────────────────────────────────────── */
     .input-area {
-      padding: 16px 24px 20px;
+      padding: 14px 24px 18px;
       border-top: 1px solid var(--border);
       background: var(--surface);
+      flex-shrink: 0;
     }
 
     .input-row {
@@ -442,7 +456,6 @@
     }
     #send-btn:hover:not(:disabled) { background: var(--accent-dim); }
     #send-btn:disabled { background: var(--border); cursor: not-allowed; }
-
     #send-btn svg { width: 16px; height: 16px; fill: white; }
 
     .input-hint {
@@ -450,6 +463,49 @@
       color: var(--text-muted);
       margin-top: 6px;
       text-align: center;
+    }
+
+    /* ── Mobile ─────────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      header {
+        padding: 10px 14px;
+        flex-wrap: wrap;
+        row-gap: 8px;
+      }
+
+      .header-title-text p { display: none; } /* hide subtitle on small screens */
+
+      .header-actions { gap: 6px; width: 100%; justify-content: flex-end; }
+
+      .model-badge { display: none; } /* too cramped on mobile */
+
+      .provider-btn { padding: 4px 8px; font-size: 10px; }
+
+      #messages { padding: 14px; gap: 16px; }
+
+      .bubble { max-width: 90%; font-size: 13px; padding: 10px 13px; }
+
+      .tool-activity,
+      .thinking,
+      .provider-notice { padding-left: 28px; }
+
+      .avatar { width: 26px; height: 26px; font-size: 12px; }
+
+      .welcome { padding: 20px 0; gap: 12px; }
+      .welcome-icon { width: 48px; height: 48px; font-size: 22px; }
+      .welcome h2  { font-size: 17px; }
+      .welcome p   { font-size: 13px; }
+
+      .suggestions { gap: 6px; }
+      .suggestion-chip { font-size: 12px; padding: 7px 13px; }
+
+      .input-area { padding: 10px 14px 14px; }
+      .input-hint { display: none; }
+    }
+
+    @media (max-width: 380px) {
+      .provider-btn { padding: 3px 6px; font-size: 9px; }
+      .hdr-btn      { padding: 5px 8px; font-size: 11px; }
     }
   </style>
 </head>
@@ -460,9 +516,9 @@
   <header>
     <div class="header-title">
       <div class="header-icon">💳</div>
-      <div>
+      <div class="header-title-text">
         <h1>Payment Analysis Agent</h1>
-        <p>ACH file analysis · Client database · Jan–Jun 2026</p>
+        <p>8 clients · Active &amp; Archive ACH · SQL analytics + semantic search</p>
       </div>
     </div>
     <div class="header-actions">
@@ -470,12 +526,11 @@
         <div class="model-dot" id="model-dot"></div>
         <span id="model-label">loading…</span>
       </div>
-      <div class="provider-selector" title="Choose which AI provider to use">
-        <button class="provider-btn active" data-provider="auto">Auto</button>
+      <div class="provider-selector" title="Choose AI provider">
+        <button class="provider-btn" data-provider="auto">Auto</button>
         <button class="provider-btn" data-provider="primary">External</button>
-        <button class="provider-btn" data-provider="ollama">Ollama</button>
+        <button class="provider-btn active" data-provider="ollama">Ollama</button>
       </div>
-      <button class="hdr-btn" id="clear-cache-btn" title="Clear the semantic response cache">🗑 Clear cache</button>
       <button class="hdr-btn" id="clear-btn">Clear chat</button>
     </div>
   </header>
@@ -485,23 +540,23 @@
     <div class="welcome" id="welcome">
       <div class="welcome-icon">💳</div>
       <h2>Payment Analysis Agent</h2>
-      <p>Ask me to analyse ACH payment files or query the client database.
-         I'll pull data from MinIO and SQL Server in real time.</p>
+      <p>Ask me anything about your ACH payments — active batches, 13-month archive trends,
+         client risk, or anomalies. I'll query MinIO, SQL Server, and the vector index live.</p>
       <div class="suggestions">
-        <button class="suggestion-chip" data-msg="Analyse all payment files in the Active folder and give me a full breakdown by company">
-          📂 Analyse Active
+        <button class="suggestion-chip" data-msg="Analyse all payment files in the Active folder and give me a full breakdown by company — include credits, debits, entry class, and any anomalies.">
+          📂 Analyse Active files
         </button>
-        <button class="suggestion-chip" data-msg="Search Archive for companies with high credit volumes over the past 12 months">
-          🗄 Search Archive
+        <button class="suggestion-chip" data-msg="Give me a full breakdown of all companies in the Archive — total credits, debits, volume, and credit-to-debit ratio for each one. Highlight anything unusual.">
+          📊 Archive overview
         </button>
-        <button class="suggestion-chip" data-msg="Which clients show suspicious or anomalous activity? Check the database for SUSPENDED or CLOSED accounts, then fetch the Active folder ACH files to see if any current batches have unusual debit spikes or return rates.">
-          🚨 Suspicious activity
+        <button class="suggestion-chip" data-msg="Which clients show suspicious or anomalous activity? Check for SUSPENDED or CLOSED accounts, unusual debit spikes, and whether any inactive clients are still submitting batches.">
+          🚨 Flag suspicious activity
         </button>
-        <button class="suggestion-chip" data-msg="Show me the transaction trend for VERTEX TECHNOLOGIES — they are a high-growth SaaS company">
-          📈 Vertex growth trend
-        </button>
-        <button class="suggestion-chip" data-msg="Search Archive for HARBOR LOGISTICS or PINNACLE TRADING — I want to understand why they stopped processing">
+        <button class="suggestion-chip" data-msg="What happened with HARBOR LOGISTICS and PINNACLE TRADING? Both stopped processing — pull their Archive history, client status, and transaction records to explain the timeline.">
           ⚠️ Churned clients
+        </button>
+        <button class="suggestion-chip" data-msg="Compare Q4 2025 (October–December) vs Q1 2026 (January–March) payment volumes across all companies. Which companies grew, which shrank, and by how much?">
+          📅 Q4 vs Q1 comparison
         </button>
       </div>
     </div>
@@ -510,7 +565,7 @@
   <!-- Input -->
   <div class="input-area">
     <div class="input-row">
-      <textarea id="user-input" rows="1" placeholder="Ask about payment files or clients…"></textarea>
+      <textarea id="user-input" rows="1" placeholder="Ask about payments, clients, or trends…"></textarea>
       <button id="send-btn" title="Send">
         <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
       </button>
@@ -521,11 +576,11 @@
 </div>
 
 <script>
-  // ── Session ID (persisted for multi-turn within the browser tab) ──────────
+  // ── Session ID ────────────────────────────────────────────────────────────
   const SESSION_ID = crypto.randomUUID();
 
-  // ── Provider state ────────────────────────────────────────────────────────
-  let activeProvider = "auto";
+  // ── Provider state — default to Ollama ───────────────────────────────────
+  let activeProvider = "ollama";
 
   // ── Model badge ───────────────────────────────────────────────────────────
   const modelDot   = document.getElementById("model-dot");
@@ -536,34 +591,32 @@
     try {
       const data = await fetch("/providers").then(r => r.json());
       providers = data;
-      updateModelBadge("primary");
+      updateModelBadge("ollama");
     } catch { modelLabel.textContent = "unavailable"; }
   }
 
   function updateModelBadge(which) {
     const isOllama = which === "ollama";
     const info     = providers[which] || {};
-    modelDot.className   = "model-dot" + (isOllama ? " ollama" : "");
+    modelDot.className    = "model-dot" + (isOllama ? " ollama" : "");
     modelLabel.textContent = info.model || which;
   }
 
   loadProviders();
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
-  const messagesEl     = document.getElementById("messages");
-  const welcomeEl      = document.getElementById("welcome");
-  const inputEl        = document.getElementById("user-input");
-  const sendBtn        = document.getElementById("send-btn");
-  const clearBtn       = document.getElementById("clear-btn");
-  const clearCacheBtn  = document.getElementById("clear-cache-btn");
-  const providerBtns   = document.querySelectorAll(".provider-btn");
+  const messagesEl   = document.getElementById("messages");
+  const welcomeEl    = document.getElementById("welcome");
+  const inputEl      = document.getElementById("user-input");
+  const sendBtn      = document.getElementById("send-btn");
+  const clearBtn     = document.getElementById("clear-btn");
+  const providerBtns = document.querySelectorAll(".provider-btn");
 
   // ── Provider selector ─────────────────────────────────────────────────────
   providerBtns.forEach(btn => {
     btn.addEventListener("click", () => {
       activeProvider = btn.dataset.provider;
       providerBtns.forEach(b => b.classList.toggle("active", b === btn));
-      // update badge: auto shows primary until a switch event overrides it
       updateModelBadge(activeProvider === "ollama" ? "ollama" : "primary");
     });
   });
@@ -587,15 +640,6 @@
     chip.addEventListener("click", () => sendMessage(chip.dataset.msg));
   });
 
-  // ── Clear cache ───────────────────────────────────────────────────────────
-  clearCacheBtn.addEventListener("click", async () => {
-    clearCacheBtn.disabled = true;
-    clearCacheBtn.textContent = "Clearing…";
-    await fetch("/cache", { method: "DELETE" });
-    clearCacheBtn.disabled = false;
-    clearCacheBtn.textContent = "🗑 Clear cache";
-  });
-
   // ── Clear chat ────────────────────────────────────────────────────────────
   clearBtn.addEventListener("click", async () => {
     await fetch("/chat", {
@@ -603,7 +647,6 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: SESSION_ID }),
     });
-    // Remove all messages except welcome
     Array.from(messagesEl.children).forEach(el => {
       if (el !== welcomeEl) el.remove();
     });
@@ -631,11 +674,10 @@
     return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   }
 
-  // Container for live tool chips + thinking indicator during a response
   let activityEl  = null;
   let thinkingEl  = null;
   let agentBubble = null;
-  let tokenBuf    = [];   // accumulates streaming tokens before markdown render
+  let tokenBuf    = [];
 
   function startAgentTurn() {
     activityEl = document.createElement("div");
@@ -686,7 +728,6 @@
   function appendToken(token) {
     _ensureAgentBubble();
     tokenBuf.push(token);
-    // Show raw text while streaming – snaps to markdown on message event
     agentBubble.textContent = tokenBuf.join("");
     scrollBottom();
   }
@@ -708,25 +749,19 @@
       messagesEl.appendChild(row);
     }
 
-    if (cacheLabel) {
-      agentBubble.innerHTML =
-        `<div class="cache-badge">${cacheLabel}</div>` + marked.parse(markdown);
-    } else {
-      agentBubble.innerHTML = marked.parse(markdown);
-    }
-    agentBubble = null;   // reset for next turn
+    agentBubble.innerHTML = cacheLabel
+      ? `<div class="cache-badge">${cacheLabel}</div>` + marked.parse(markdown)
+      : marked.parse(markdown);
+
+    agentBubble = null;
     scrollBottom();
   }
 
   function clearCurrentResponse() {
-    // Called when provider switches mid-stream – clears the partial bubble
     tokenBuf = [];
-    if (agentBubble) {
-      agentBubble.closest(".msg-row")?.remove();
-      agentBubble = null;
-    }
-    if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-    if (activityEl) { activityEl.innerHTML = ""; }
+    if (agentBubble) { agentBubble.closest(".msg-row")?.remove(); agentBubble = null; }
+    if (thinkingEl)  { thinkingEl.remove(); thinkingEl = null; }
+    if (activityEl)  { activityEl.innerHTML = ""; }
   }
 
   function showError(msg) {
@@ -745,7 +780,7 @@
     const labels = { primary: "External", ollama: "Ollama", auto: "Auto" };
     const notice = document.createElement("div");
     notice.className = "provider-notice";
-    notice.innerHTML = `⚡ Rate/quota limit hit on <strong>${labels[from] || from}</strong> — switched to <strong>${labels[to] || to}</strong>`;
+    notice.innerHTML = `⚡ Switched from <strong>${labels[from] || from}</strong> to <strong>${labels[to] || to}</strong>`;
     messagesEl.appendChild(notice);
     scrollBottom();
   }
@@ -754,7 +789,7 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // ── Main send function ────────────────────────────────────────────────────
+  // ── Main send ─────────────────────────────────────────────────────────────
 
   async function sendMessage(override) {
     const text = (override || inputEl.value).trim();
@@ -769,7 +804,6 @@
     appendUserMsg(text);
     startAgentTurn();
 
-    // Track last tool name to mark it done when the next one starts
     let lastToolName = null;
 
     try {
@@ -789,7 +823,7 @@
 
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
-        buf = lines.pop(); // keep incomplete line
+        buf = lines.pop();
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
@@ -797,7 +831,6 @@
           try { evt = JSON.parse(line.slice(6)); } catch { continue; }
 
           if (evt.type === "token") {
-            // Live streaming token – append to bubble before markdown render
             if (lastToolName) { finishToolChip(lastToolName); lastToolName = null; }
             appendToken(evt.content || "");
           }
@@ -816,14 +849,12 @@
           }
 
           if (evt.type === "message") {
-            // Final event – re-render accumulated tokens as proper markdown
             if (lastToolName) finishToolChip(lastToolName);
             lastToolName = null;
             showAnswer(evt.content || "", null);
           }
 
           if (evt.type === "clear_response") {
-            // Provider switched mid-stream – clear partial response
             clearCurrentResponse();
           }
 

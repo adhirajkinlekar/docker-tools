@@ -108,14 +108,15 @@ class SemanticCache:
         try:
             await self._ensure_ready()
             vector  = await self._embed(query)
-            results = await self._client.search(
+            response = await self._client.query_points(
                 collection_name=COLLECTION,
-                query_vector=vector,
+                query=vector,
                 query_filter=self._ttl_filter(),
                 limit=1,
                 score_threshold=THRESHOLD,
                 with_payload=True,
             )
+            results = response.points
             if results:
                 hit     = results[0]
                 age_min = (time.time() - hit.payload.get("cached_at", 0)) / 60
