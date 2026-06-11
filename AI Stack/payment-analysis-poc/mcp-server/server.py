@@ -157,7 +157,7 @@ def get_container_summary(bucket: str = "payments") -> str:
 
 
 @mcp.tool()
-async def rag_search_payments(query: str, limit: int = 10) -> str:
+async def rag_search_payments(query: str, limit: int = 5) -> str:
     """
     Semantic vector search over pre-indexed ACH summaries from the Archive folder.
 

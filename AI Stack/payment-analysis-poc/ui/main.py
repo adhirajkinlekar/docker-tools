@@ -304,7 +304,7 @@ async def _get_tools(mcp_session: ClientSession) -> list[dict]:
 
 async def _detect_ollama() -> tuple[str, str]:
     """
-    Ping host Ollama first; if reachable use it with the best/host model.
+    Ping host Ollama first; if reachable AND the host model is available, use it.
     Otherwise fall back to the containerised Ollama with the small model.
     Returns (base_url, model).
     """
@@ -313,11 +313,23 @@ async def _detect_ollama() -> tuple[str, str]:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(f"{host_base}/api/tags")
             if r.status_code == 200:
-                logger.info(
-                    "Native Ollama detected – using host instance with model '%s'",
-                    OLLAMA_HOST_MODEL,
+                available = [m.get("name", "") for m in r.json().get("models", [])]
+                # Match by prefix so "qwen2.5:7b" matches "qwen2.5:7b-instruct-q4" etc.
+                model_found = any(
+                    m == OLLAMA_HOST_MODEL or m.startswith(OLLAMA_HOST_MODEL.split(":")[0] + ":" + OLLAMA_HOST_MODEL.split(":")[-1])
+                    for m in available
                 )
-                return OLLAMA_HOST_URL, OLLAMA_HOST_MODEL
+                if model_found:
+                    logger.info(
+                        "Native Ollama detected – using host instance with model '%s'",
+                        OLLAMA_HOST_MODEL,
+                    )
+                    return OLLAMA_HOST_URL, OLLAMA_HOST_MODEL
+                else:
+                    logger.info(
+                        "Host Ollama reachable but model '%s' not found (available: %s) – falling back to container",
+                        OLLAMA_HOST_MODEL, available,
+                    )
     except Exception:
         pass
     logger.info(
