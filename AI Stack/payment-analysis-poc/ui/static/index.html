@@ -388,20 +388,6 @@
       animation: fadeIn .2s ease;
     }
 
-    /* ── Cache hit badge ────────────────────────────────────────── */
-    .cache-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      background: #1a2a10;
-      border: 1px solid #3a6020;
-      border-radius: 20px;
-      padding: 3px 10px;
-      font-size: 11px;
-      color: #7ecf50;
-      margin-bottom: 8px;
-    }
-
     /* ── Error bubble ───────────────────────────────────────────── */
     .bubble.error {
       background: #2a1a1a;
@@ -732,7 +718,7 @@
     scrollBottom();
   }
 
-  function showAnswer(markdown, cacheLabel = null) {
+  function showAnswer(markdown) {
     tokenBuf = [];
     if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 
@@ -749,10 +735,7 @@
       messagesEl.appendChild(row);
     }
 
-    agentBubble.innerHTML = cacheLabel
-      ? `<div class="cache-badge">${cacheLabel}</div>` + marked.parse(markdown)
-      : marked.parse(markdown);
-
+    agentBubble.innerHTML = marked.parse(markdown);
     agentBubble = null;
     scrollBottom();
   }
@@ -841,17 +824,10 @@
             addToolChip(evt.name);
           }
 
-          if (evt.type === "cache_hit") {
-            if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-            if (activityEl) { activityEl.remove(); activityEl = null; }
-            const ttl = evt.ttl_hours ?? 24;
-            showAnswer(evt.content || "", `⚡ From cache · refreshes every ${ttl}h`);
-          }
-
           if (evt.type === "message") {
             if (lastToolName) finishToolChip(lastToolName);
             lastToolName = null;
-            showAnswer(evt.content || "", null);
+            showAnswer(evt.content || "");
           }
 
           if (evt.type === "clear_response") {

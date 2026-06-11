@@ -6,18 +6,15 @@ Provider strategy:
   • "primary"  – always use the external provider (Groq / OpenAI / GitHub Models)
   • "ollama"   – always use the local Ollama instance
 
-Improvements over v1:
+Key features:
   • stream=True on all LLM calls → live token streaming to the browser
   • MAX_ITERATIONS guard prevents infinite tool-call loops
   • Smart JSON-aware tool output truncation (6 000 chars)
   • Retry with exponential backoff for transient 5xx / connection errors
   • Session store with TTL + max-size eviction (no unbounded memory growth)
   • MCP tool list cached after first fetch (saves one round-trip per request)
-  • AsyncQdrantClient used in cache (non-blocking event loop)
   • Deprecated on_event replaced with lifespan context manager
   • Request-scoped IDs in all log messages
-  • Token usage logged after each LLM call
-  • Generic error messages returned to the user (detail stays in server logs)
   • Dynamic date injected into system prompt
   • Auto-fallback rollback is message-safe (partial state cleaned up on switch)
 """
@@ -41,8 +38,6 @@ from fastapi.staticfiles import StaticFiles
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
-from cache import SemanticCache
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -56,7 +51,6 @@ OLLAMA_HOST_URL        = os.environ.get("OLLAMA_HOST_URL",       "http://host.do
 OLLAMA_HOST_MODEL      = os.environ.get("OLLAMA_HOST_MODEL",     "qwen2.5:7b")
 OLLAMA_CONTAINER_URL   = os.environ.get("OLLAMA_CONTAINER_URL",  "http://ollama:11434/v1")
 OLLAMA_CONTAINER_MODEL = os.environ.get("OLLAMA_CONTAINER_MODEL","qwen2.5:1.5b")
-QDRANT_URL             = os.environ.get("QDRANT_URL",            "http://qdrant:6333")
 
 # Active Ollama URL/model – resolved at startup by _detect_ollama()
 OLLAMA_MODEL: str = OLLAMA_CONTAINER_MODEL  # overridden in lifespan
@@ -206,10 +200,31 @@ def _make_client(api_key: str, base_url: str | None) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(**kwargs)
 
 
-oai_primary = _make_client(OPENAI_API_KEY, OPENAI_BASE_URL or None)
+def _primary_base_url() -> str | None:
+    """
+    Resolve the correct base URL for the primary (OpenAI) client.
+
+    docker-compose sets OPENAI_BASE_URL to the Ollama container by default so
+    the stack works out-of-the-box without an OpenAI key.  But when a real
+    sk-... key is present, that Ollama URL must be ignored — the SDK should
+    use its built-in default (https://api.openai.com/v1).
+
+    Rule: if the key looks like a genuine OpenAI key AND the configured URL
+    looks like an Ollama endpoint, drop the URL.
+    """
+    key = OPENAI_API_KEY or ""
+    url = OPENAI_BASE_URL or ""
+    is_real_openai_key = key.startswith("sk-")
+    is_ollama_url      = "ollama" in url.lower() or "11434" in url
+    if is_real_openai_key and is_ollama_url:
+        logger.info("Real OpenAI key detected with Ollama base URL — forcing https://api.openai.com/v1")
+        return "https://api.openai.com/v1"   # must be explicit: SDK reads OPENAI_BASE_URL env var as fallback
+    return url or "https://api.openai.com/v1"
+
+
+oai_primary = _make_client(OPENAI_API_KEY, _primary_base_url())
 oai_ollama  = _make_client("ollama", OLLAMA_CONTAINER_URL)  # overridden in lifespan
 
-cache = SemanticCache(QDRANT_URL)
 
 # MCP tool list – fetched once and cached (tools are static at server startup)
 _cached_oai_tools: list[dict] | None = None
@@ -504,24 +519,13 @@ async def agent_stream(
     req_id = req_id or str(uuid.uuid4())[:8]
     logger.info("[%s] session=%s provider=%s query='%s'", req_id, session_id, provider, user_message[:80])
 
-    # ── 1. Semantic cache check ───────────────────────────────────────────────
-    cached = await cache.get(user_message)
-    if cached is not None:
-        ttl_h = float(os.environ.get("CACHE_TTL_HOURS", "24"))
-        logger.info("[%s] Cache HIT", req_id)
-        yield _sse("cache_hit", content=cached, ttl_hours=ttl_h)
-        yield _sse("done")
-        return
-
-    # ── 2. Prepare session ────────────────────────────────────────────────────
+    # ── Prepare session ───────────────────────────────────────────────────────
     history = sessions.get(session_id)
     if history is None:
         history = [{"role": "system", "content": _build_system_prompt()}]
 
     messages = list(history)
     messages.append({"role": "user", "content": user_message})
-
-    final_content: str | None = None
 
     try:
         async with sse_client(MCP_SERVER_URL) as (read, write):
@@ -552,10 +556,8 @@ async def agent_stream(
 
                     except (openai.RateLimitError, openai.APIStatusError) as exc:
                         if _is_quota_error(exc):
-                            # Roll back any partial message state from the failed run
                             del messages[snapshot_len:]
-
-                            yield _sse("clear_response")   # tell UI to clear current bubble
+                            yield _sse("clear_response")
                             yield _sse(
                                 "provider_switch",
                                 from_provider="primary",
@@ -563,7 +565,6 @@ async def agent_stream(
                                 reason=str(exc)[:120],
                             )
                             logger.warning("[%s] Quota hit – switching to Ollama: %s", req_id, exc)
-
                             async for event in _run_agent(
                                 messages, oai_tools, mcp_session, oai_ollama, OLLAMA_MODEL, req_id
                             ):
@@ -571,13 +572,11 @@ async def agent_stream(
                         else:
                             raise
 
-                # ── Extract final content for caching ────────────────────────
-                for m in reversed(messages):
-                    if m.get("_final") is not None:
-                        final_content = m["_final"]
-                        break
-
-                # ── Persist pruned session (system + last user + last answer) ─
+                # ── Persist pruned session (system + last N turns) ────────────
+                final_content = next(
+                    (m["_final"] for m in reversed(messages) if m.get("_final") is not None),
+                    None,
+                )
                 if final_content is not None:
                     last_user = next(
                         (m for m in reversed(messages) if m.get("role") == "user"), None
@@ -588,13 +587,27 @@ async def agent_stream(
                     new_history.append({"role": "assistant", "content": final_content})
                     sessions.set(session_id, new_history)
 
-        # ── 3. Cache successful response ──────────────────────────────────────
-        if final_content:
-            await cache.set(user_message, final_content)
-
     except BaseException as exc:
-        logger.exception("[%s] Agent stream error", req_id)
-        yield _sse("error", content="An error occurred processing your request. Please try again.")
+        # anyio / MCP's SSE client wraps exceptions in nested ExceptionGroups.
+        # Unwrap recursively until we hit the actual exception.
+        real: BaseException = exc
+        while isinstance(real, BaseExceptionGroup):
+            causes = list(real.exceptions)
+            real = causes[0] if causes else real
+
+        logger.exception("[%s] Agent stream error: %s", req_id, type(real).__name__)
+
+        if isinstance(real, openai.AuthenticationError):
+            yield _sse("error", content="OpenAI API key is invalid or expired. Switch to Ollama or check your key.")
+        elif isinstance(real, openai.RateLimitError):
+            if "quota" in str(real).lower() or "insufficient_quota" in str(real).lower():
+                yield _sse("error", content="OpenAI quota exceeded — your account has no remaining credits. Switch to Ollama to continue.")
+            else:
+                yield _sse("error", content="OpenAI rate limit hit. Wait a moment and try again, or switch to Ollama.")
+        elif isinstance(real, openai.NotFoundError):
+            yield _sse("error", content=f"Model '{PRIMARY_MODEL}' not found on this OpenAI key. Switch to Ollama or set AGENT_MODEL to an available model.")
+        else:
+            yield _sse("error", content="An error occurred processing your request. Please try again.")
     finally:
         yield _sse("done")
 
@@ -677,29 +690,9 @@ async def clear_session(request: Request):
     return {"ok": True}
 
 
-@app.delete("/cache")
-async def clear_cache():
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, cache.clear)
-    return {"ok": True}
-
-
-@app.delete("/cache/expired")
-async def clear_expired_cache():
-    return {"ok": True, "deleted": cache.clear_expired()}
-
-
 @app.get("/health")
 async def health():
     checks: dict[str, str] = {}
-
-    # Qdrant
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as c:
-            r = await c.get(f"{QDRANT_URL.rstrip('/')}/healthz")
-            checks["qdrant"] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
-    except Exception as exc:
-        checks["qdrant"] = f"error: {exc}"
 
     # MCP server
     mcp_health_url = MCP_SERVER_URL.replace("/sse", "/health")
